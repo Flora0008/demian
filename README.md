@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://arxiv.org/pdf/2605.17077"><img src="https://img.shields.io/badge/arXiv-2605.17077-b31b1b?logo=arxiv&logoColor=white" alt="arXiv"></a>
   <a href="https://huggingface.co/PEARLS-Lab/DeMiAn"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models%20%26%20Data-FFD21E?logoColor=black" alt="Hugging Face"></a>
-  <a href="https://pearls-lab.github.io/demian_private/"><img src="https://img.shields.io/badge/Project-Website-2ea44f?logo=github&logoColor=white" alt="Website"></a>
+  <a href="https://pearls-lab.github.io/demian"><img src="https://img.shields.io/badge/Project-Website-2ea44f?logo=github&logoColor=white" alt="Website"></a>
 </p>
 
 <p align="center">
