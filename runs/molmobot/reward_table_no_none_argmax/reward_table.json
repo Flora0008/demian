@@ -1,0 +1,57 @@
+{
+  "_comment": "Per-bench success rates from the May 14 mix5 caption-source sweep (docs/experiments.md). Excludes 'none' to satisfy the no-empty-caption constraint. The routing_table.json picks argmax-over-{ca,es,aas,rs} per benchmark, aggregated to task families: pick_*→aas (47.7% family avg), pnp_*→rs (48.3%), pnp_nextto→rs (15.0%), pnp_color→ca (48.0%, tied with rs).",
+  "pick_std": {
+    "current_action": 0.76,
+    "reasoning-short": 0.75,
+    "environment-simple": 0.75,
+    "agent_arm_state": 0.75
+  },
+  "pick_hard": {
+    "current_action": 0.36,
+    "reasoning-short": 0.36,
+    "environment-simple": 0.40,
+    "agent_arm_state": 0.42
+  },
+  "pick_ood": {
+    "current_action": 0.24,
+    "reasoning-short": 0.25,
+    "environment-simple": 0.26,
+    "agent_arm_state": 0.26
+  },
+  "pnp_std": {
+    "current_action": 0.73,
+    "reasoning-short": 0.78,
+    "environment-simple": 0.78,
+    "agent_arm_state": 0.78
+  },
+  "pnp_hard": {
+    "current_action": 0.42,
+    "reasoning-short": 0.38,
+    "environment-simple": 0.42,
+    "agent_arm_state": 0.40
+  },
+  "pnp_ood": {
+    "current_action": 0.24,
+    "reasoning-short": 0.29,
+    "environment-simple": 0.22,
+    "agent_arm_state": 0.24
+  },
+  "pnp_nextto": {
+    "current_action": 0.16,
+    "reasoning-short": 0.21,
+    "environment-simple": 0.18,
+    "agent_arm_state": 0.19
+  },
+  "nextto_ood": {
+    "current_action": 0.10,
+    "reasoning-short": 0.09,
+    "environment-simple": 0.06,
+    "agent_arm_state": 0.10
+  },
+  "pnp_color": {
+    "current_action": 0.48,
+    "reasoning-short": 0.48,
+    "environment-simple": 0.40,
+    "agent_arm_state": 0.46
+  }
+}

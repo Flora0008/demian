@@ -1,0 +1,2 @@
+# sentinel empty config, used by serve.py to signal that the config should be read from stdin
+{}

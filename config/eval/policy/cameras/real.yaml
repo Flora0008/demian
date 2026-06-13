@@ -1,0 +1,2 @@
+exo_camera_1: "observation/exterior_image_1_left"
+wrist_camera: "observation/wrist_image_left"

@@ -1,0 +1,53 @@
+{
+  "title": "EgoVerse Dense Captioning",
+  "prompts": {
+    "current_action": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Describe the physical movements of the person's hands in this clip. Focus on what each hand is doing: reaching, grasping, lifting, pouring, stirring, placing, etc. Mention the objects being manipulated and the direction of movement. Focus only on the movements within the given frames. Do not hallucinate or make up actions."
+    },
+    "environment": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Describe the physical environment shown in the images. List the setting, workspace surfaces, and visible objects (such as tools, containers, food items, or appliances). Note their spatial arrangement."
+    },
+    "hand_start_state": {
+      "constraint": "under 2 sentences",
+      "prompt": "Describe the exact position and posture of the person's hands at the very first frame. What are they holding, touching, or hovering over? Focus strictly on the hands' state relative to the objects and workspace, without describing the action."
+    },
+    "hand_end_state": {
+      "constraint": "under 2 sentences",
+      "prompt": "Describe the exact position and posture of the person's hands at the very last frame. What are they holding, touching, or hovering over? Focus strictly on the hands' state relative to the objects and workspace, without describing the action."
+    },
+    "reasoning": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Reason about what the person is doing and why, given the task description and the current action annotation. What is the goal of this action segment? What was likely done before this, and what will likely come next? Is this a preparatory step, the main manipulation, or a cleanup step?"
+    },
+    "object_state_before": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Describe the state of all task-relevant objects at the START of this segment (focus on the first frame). For each object, describe its location, orientation, and condition (e.g., open/closed, full/empty, held/resting). Include the state of the hands — what they are holding or touching. Do not describe any actions or movements."
+    },
+    "object_state_after": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Describe the state of all task-relevant objects at the END of this segment (focus on the last frame). For each object, describe its location, orientation, and condition (e.g., open/closed, full/empty, held/resting). Include the state of the hands — what they are holding or touching. Do not describe any actions or movements."
+    },
+    "object_state_delta": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Compare the state of objects at the start versus the end of this segment and describe ONLY what changed. State what objects moved, what changed hands, what was filled or emptied, what was opened or closed — the concrete effects of the action. Use the format: 'Object X changed from [before state] to [after state].' Do not describe the action itself, only its effects on the world."
+    },
+    "spatial_start": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Using the PROPRIOCEPTIVE SPATIAL DATA provided and the first frame, describe the spatial arrangement of the hands and objects at the START of this segment. Include specific distances and positions from the data. Describe where each hand is relative to the workspace and objects. Ground the numeric measurements in what you observe in the images."
+    },
+    "spatial_end": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Using the PROPRIOCEPTIVE SPATIAL DATA provided and the last frame, describe the spatial arrangement of the hands and objects at the END of this segment. Include specific distances and positions from the data. Describe where each hand is relative to the workspace and objects. Ground the numeric measurements in what you observe in the images."
+    },
+    "spatial_motion": {
+      "constraint": "under 2 sentences, be concise",
+      "prompt": "Using the PROPRIOCEPTIVE SPATIAL DATA provided and all frames, describe the motion trajectory during this segment. Focus on direction and magnitude of hand movements, whether hands converged or diverged, and how grasp aperture changed. Translate the numeric displacement and distance data into a natural-language description of the spatial motion."
+    },
+    "dense": {
+      "constraint": "≤ 5 short sentences, concise, no filler, no pronouns for target objects, written in present tense, robot or agent centric, front-loading the categories the action expert weighs most",
+      "prompt": "Describe the current subtask in a single dense observation that the action model can condition on. Include, in this order:\n  1. Name the target objects and fixtures explicitly (drawer, handle, mug, lever, burner knob, cabinet door). Do NOT use pronouns or generic words like \"object\".\n  2. Name every discrete movement of the gripper with an explicit verb (e.g. reach, lift, lower, grasp, release, rotate, press, slide, push, pull) — one verb per motion, in execution order.\n  3. State the direction of each motion with a cardinal or robot-frame adverb (left/right/up/down/forward/backward, clockwise/counterclockwise, inward/outward) — direction, not just displacement.\n  4. Refer to the robot component precisely: \"the gripper\", \"the arm\", \"the end-effector\" — avoid the generic \"robot\".\n  5. Mark the stage of the trajectory (\"currently\", \"then\", \"next\", \"about to\", \"final step\") so the policy can anchor itself in time.\n  6. Use a spatial preposition for every placement (on / in / into / onto / above / between / next to). Placement relations matter to the policy more than free-form prose.\nAvoid scene-setting, meta commentary, and restating the task description. Five sentences maximum."
+    }
+  }
+}

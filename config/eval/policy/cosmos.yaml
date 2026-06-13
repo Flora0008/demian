@@ -1,0 +1,24 @@
+defaults:
+  - cameras: sim_cosmos_shoulder
+  - _self_
+
+type: cosmos
+
+# ---- Checkpoint (consolidated .pt produced by consolidate_dcp_to_pt.py) ----
+checkpoint_path: ???
+checkpoint_step: 0                # Optional label used for logging
+
+# ---- Cosmos Policy config ----
+config_name: cosmos_predict2_2b_480p_molmobot_subset_20pct_v2__inference_only
+config_file: cosmos_policy/config/config.py   # Relative to CWD (cosmos-policy project root)
+dataset_stats_path: ???
+t5_text_embeddings_path: null      # Computes T5 embeddings on-demand if null
+
+# ---- Inference hyperparameters ----
+chunk_size: 16
+num_open_loop_steps: 16
+num_denoising_steps_action: 5
+flip_images: false                 # MolmoBot data isn't y-flipped (unlike LIBERO)
+use_jpeg_compression: true
+trained_with_image_aug: true
+use_variance_scale: false

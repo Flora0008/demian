@@ -1,0 +1,25 @@
+defaults:
+  - cameras: real
+  - _self_
+
+type: pi
+action_type: jointpos
+
+model_name: null
+model_dir: hf://allenai/MolmoBot-Pi0-DROID
+checkpoints: null
+use_torch: true
+buffer_length: -1
+compile_mode: max-autotune-no-cudagraphs
+max_joint_delta: 0.2
+# For caption-trained models: "current_action", "action_for_policy", or "environment-simple"
+caption_key: null
+# Set to true for PnP Color benchmarks — prevents caption from echoing misleading color aliases
+color_task: false
+# Per-episode caption lookup file (JSON). Used for Color benchmarks where
+# referral expressions differ from task description aliases.
+caption_file: null
+# Strict mode: caption_file is the SOLE source of caption text; no template
+# fallback. Empty string in file → no caption appended (matches Mix5 'none'
+# training behavior). Used for evaluating learned instructors.
+caption_strict_file: false

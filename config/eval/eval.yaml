@@ -1,0 +1,15 @@
+defaults:
+  - policy: ???
+
+seed: 42
+num_workers: 20
+num_policies_per_gpu: 1
+n_videos: 40
+horizon: 40.0
+min_success_duration: 0.5
+use_policy_server: true
+benchmark: ???
+
+filament:
+  enabled: false
+  light_intensity: 12000

@@ -1,0 +1,72 @@
+# Usage: sbatch scripts/train_action_head_full_jflow_ffn4_vlmimg_mixedinit.slurm
+
+job:
+  project: dreamdojo_action_head
+  group: exp_action_head_full_jflow_ffn4_vlmimg_mixedinit
+  name: mixed_full_jflow_ffn4_vlmimg_mixedinit
+
+trainer:
+  grad_accum_iter: 1
+  callbacks:
+    compile_tokenizer:
+      enabled: false
+    grad_clip:
+      clip_norm: 1.0
+    every_n_sample_reg:
+      every_n: 5000
+      fps: 5
+    every_n_sample_ema:
+      every_n: 5000
+      fps: 5
+
+model_parallel:
+  context_parallel_size: 1
+
+model:
+  config:
+    state_t: 4
+    action_dim: 7
+    num_action_steps: 12
+    action_loss_weight: 5.0
+    min_num_conditional_frames: 1
+    max_num_conditional_frames: 1
+    conditional_frames_probs: null
+    # JointFlowActionExpert: K=4 layers, joint softmax over per-layer DiT taps
+    # + joint VL (image-conditioned) + action_self. Mutex-explicit.
+    use_joint_flow_action_expert: true
+    use_flow_action_expert: false
+    use_action_expert: false
+    use_vlm_action_expert: false
+    use_joint_action_expert: false
+    action_expert_num_layers: 4
+    # FFN ratio = 4: wider FFN per layer (hidden = 8192 vs 4096 at ratio=2).
+    action_expert_mlp_ratio: 4
+    action_expert_taps: [6, 13, 20, 27]
+    flow_inference_num_steps: 10
+    # FULL_CONCAT (100352D) text encoder strategy + image conditioning ON so
+    # Reason1 produces joint vision-language tokens fed into the action expert's
+    # "text" K/V slot.
+    text_encoder_config:
+      embedding_concat_strategy: full_concat
+      image_conditioning: true
+      joint_padding_tokens: 768
+      image_max_pixels: 65536
+    net:
+      crossattn_proj_in_channels: 100352
+
+dataloader_train:
+  batch_size: 4
+
+  dataset:
+    num_frames: 13
+    # Single full-dataset path is injected by the slurm wrapper.
+    data_split: train
+    single_base_index: false
+    deterministic_uniform_sampling: false
+    # caption_mode is overridden by the slurm wrapper to:
+    #   random:none,ep_action,ep_env_simple,ep_reasoning,ep_arm_state
+    caption_mode: baseline
+    fg_stride: 4
+    use_image_aug: true
+    video_height: 256
+    video_width: 256

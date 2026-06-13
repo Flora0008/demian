@@ -1,0 +1,44 @@
+{
+  "pick_std": {
+    "none": 0.8,
+    "current_action": 0.9,
+    "reasoning-short": 0.85,
+    "environment-simple": 0.9,
+    "agent_arm_state": 0.85
+  },
+  "pnp_std": {
+    "none": 0.55,
+    "current_action": 0.65,
+    "reasoning-short": 0.6,
+    "environment-simple": 0.55,
+    "agent_arm_state": 0.7
+  },
+  "pick_hard": {
+    "none": 0.5,
+    "current_action": 0.35,
+    "reasoning-short": 0.45,
+    "environment-simple": 0.35,
+    "agent_arm_state": 0.4
+  },
+  "pick_ood": {
+    "none": 0.5,
+    "current_action": 0.4,
+    "reasoning-short": 0.35,
+    "environment-simple": 0.45,
+    "agent_arm_state": 0.5
+  },
+  "pnp_nextto": {
+    "none": 0.2778,
+    "current_action": 0.3333,
+    "reasoning-short": 0.4444,
+    "environment-simple": 0.1667,
+    "agent_arm_state": 0.2778
+  },
+  "pnp_color": {
+    "none": 0.55,
+    "current_action": 0.6,
+    "reasoning-short": 0.55,
+    "environment-simple": 0.6,
+    "agent_arm_state": 0.25
+  }
+}

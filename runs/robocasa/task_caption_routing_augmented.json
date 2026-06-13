@@ -1,0 +1,87 @@
+{
+  "CloseBlenderLid": {
+    "agent_arm_start_state": 0.8,
+    "environment-simple": 0.1,
+    "action_for_policy": 0.1
+  },
+  "CloseFridge": {
+    "current_action": 0.8,
+    "action_for_policy": 0.1,
+    "agent_arm_start_state": 0.1
+  },
+  "CloseToasterOvenDoor": {
+    "environment-simple": 0.8,
+    "current_action": 0.1,
+    "action_for_policy": 0.1
+  },
+  "CoffeeSetupMug": {
+    "None": 0.8,
+    "current_action": 0.1,
+    "action_for_policy": 0.1
+  },
+  "OpenCabinet": {
+    "current_action": 0.8,
+    "environment-simple": 0.1,
+    "agent_arm_start_state": 0.1
+  },
+  "OpenDrawer": {
+    "action_for_policy": 0.8,
+    "environment-simple": 0.1,
+    "agent_arm_start_state": 0.1
+  },
+  "OpenStandMixerHead": {
+    "environment-simple": 0.8,
+    "agent_arm_start_state": 0.1,
+    "action_for_policy": 0.1
+  },
+  "PickPlaceCounterToCabinet": {
+    "current_action": 0.8,
+    "environment-simple": 0.1,
+    "action_for_policy": 0.1
+  },
+  "PickPlaceCounterToStove": {
+    "environment-simple": 0.8,
+    "agent_arm_start_state": 0.1,
+    "current_action": 0.1
+  },
+  "PickPlaceDrawerToCounter": {
+    "action_for_policy": 0.8,
+    "current_action": 0.1,
+    "environment-simple": 0.1
+  },
+  "PickPlaceSinkToCounter": {
+    "None": 0.8,
+    "environment-simple": 0.1,
+    "agent_arm_start_state": 0.1
+  },
+  "PickPlaceToasterToCounter": {
+    "environment-simple": 0.8,
+    "action_for_policy": 0.1,
+    "current_action": 0.1
+  },
+  "SlideDishwasherRack": {
+    "None": 0.8,
+    "current_action": 0.1,
+    "agent_arm_start_state": 0.1
+  },
+  "TurnOffStove": {
+    "None": 0.8,
+    "current_action": 0.1,
+    "environment-simple": 0.1
+  },
+  "TurnOnElectricKettle": {
+    "None": 0.8,
+    "agent_arm_start_state": 0.1,
+    "action_for_policy": 0.1
+  },
+  "TurnOnMicrowave": {
+    "current_action": 0.8,
+    "agent_arm_start_state": 0.1,
+    "environment-simple": 0.1
+  },
+  "TurnOnSinkFaucet": {
+    "current_action": 0.8,
+    "action_for_policy": 0.1,
+    "agent_arm_start_state": 0.1
+  }
+}

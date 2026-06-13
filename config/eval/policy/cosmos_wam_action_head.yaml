@@ -1,0 +1,35 @@
+defaults:
+  - cameras: sim_cosmos_shoulder
+  - _self_
+
+type: cosmos_wam_action_head
+
+# ---- Checkpoint ----
+# Path to the consolidated .pt produced by
+# cosmos_wam/scripts/convert_dcp_to_regular.py (it already merges
+# action_head weights from aux_optim.pt).
+# Either set `checkpoint_path` directly, or use `{model_dir, checkpoints}`.
+checkpoint_path: ???
+checkpoint_step: 0
+# Alternative (comment `checkpoint_path` to enable):
+# model_dir: ???
+# checkpoints: [2000]
+
+# ---- Experiment (must be registered in cosmos_predict2.experiments.base.action) ----
+experiment: dreamdojo_2b_256_molmobot_action_head
+
+# ---- Dataset normalization stats ----
+# JSON with actions_mean/std/min/max (8D) and proprio_mean/std/min/max (9D).
+# Produced by cosmos_wam/scripts/export_molmobot_dataset_stats.py.
+dataset_stats_path: ???
+
+# ---- Model shape ----
+action_dim: 8
+num_action_steps: 16
+
+# ---- Inference hyperparameters ----
+num_open_loop_steps: 16
+num_denoising_steps: 35
+shift: 5.0
+guidance: 1.5
+randomize_seed: false

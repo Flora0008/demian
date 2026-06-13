@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Training / eval outputs (regenerated locally)
+train_output/
+outputs/
+logs/
+wandb/
+
+# Model weights & containers — hosted on Hugging Face, not committed
+*.safetensors
+*.pt
+*.ckpt
+*.sqsh
+
+# Data artifacts — hosted on Hugging Face (only data/README.md is tracked)
+/data/*
+!/data/README.md

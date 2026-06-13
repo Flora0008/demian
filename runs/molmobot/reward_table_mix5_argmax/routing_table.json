@@ -1,0 +1,20 @@
+{
+  "pick_hard": {
+    "none": 1.0
+  },
+  "pick_ood": {
+    "none": 1.0
+  },
+  "pick_std": {
+    "current_action": 1.0
+  },
+  "pnp_color": {
+    "current_action": 1.0
+  },
+  "pnp_nextto": {
+    "reasoning-short": 1.0
+  },
+  "pnp_std": {
+    "agent_arm_state": 1.0
+  }
+}

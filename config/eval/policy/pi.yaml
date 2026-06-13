@@ -1,0 +1,21 @@
+defaults:
+  - cameras: real
+  - _self_
+
+type: pi
+action_type: jointvel
+
+model_name: ???
+model_dir: null
+checkpoints: null
+use_torch: false
+buffer_length: -1
+compile_mode: max-autotune-no-cudagraphs
+max_joint_delta: 0.2
+
+# Async learned-instructor eval (paper RQ2). When instructor_url is set, the
+# policy queries a live Qwen3.5-2B instructor server on the initial frames and
+# splices the annotation at the next chunk boundary (instructor_sync=true blocks
+# the first action until ready). Leave null for the default file/template path.
+instructor_url: null
+instructor_sync: false

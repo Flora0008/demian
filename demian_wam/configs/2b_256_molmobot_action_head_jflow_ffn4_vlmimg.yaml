@@ -1,0 +1,70 @@
+# Usage: sbatch scripts/train_molmobot_action_head_jflow_ffn4_vlmimg.slurm
+
+job:
+  project: dreamdojo_action_head
+  group: exp_molmobot_action_head_jflow_ffn4_vlmimg
+  name: baseline_molmo_jflow_ffn4_vlmimg
+
+trainer:
+  grad_accum_iter: 2
+  callbacks:
+    grad_clip:
+      clip_norm: 1.0
+    every_n_sample_reg:
+      every_n: 999999
+      fps: 5
+    every_n_sample_ema:
+      every_n: 999999
+      fps: 5
+
+model_parallel:
+  context_parallel_size: 1
+
+model:
+  config:
+    state_t: 4
+    action_dim: 8
+    num_action_steps: 16
+    action_loss_weight: 5.0
+    min_num_conditional_frames: 1
+    max_num_conditional_frames: 1
+    conditional_frames_probs: null
+    # JointFlowActionExpert: K=4 layers, joint softmax over per-layer DiT taps
+    # + text (now joint VL) + action_self. Mutex-explicit (other expert flags = false).
+    use_joint_flow_action_expert: true
+    use_flow_action_expert: false
+    use_action_expert: false
+    use_vlm_action_expert: false
+    use_joint_action_expert: false
+    action_expert_num_layers: 4
+    action_expert_mlp_ratio: 4
+    action_expert_taps: [6, 13, 20, 27]
+    flow_inference_num_steps: 10
+    # FULL_CONCAT (100352D) text encoder strategy + image conditioning ON so
+    # Reason1 produces joint vision-language tokens fed into the action expert's
+    # "text" K/V slot. Conditioning frame is auto-extracted from the video tensor
+    # by the model when image_conditioning=True.
+    text_encoder_config:
+      embedding_concat_strategy: full_concat
+      image_conditioning: true
+      joint_padding_tokens: 768
+      image_max_pixels: 65536
+    net:
+      crossattn_proj_in_channels: 100352
+
+dataloader_train:
+  batch_size: 4
+
+  dataset:
+    num_frames: 13
+    # 4-dataset mixture matching Pi0's pi05_mlspaces_finetune baseline.
+    dataset_path:
+      - /path/to/data/molmobot-data/subset_20pct/FrankaPickAndPlaceOmniCamConfig/part0/train
+      - /path/to/data/molmobot-data/subset_20pct/FrankaPickOmniCamConfig/part0/train
+      - /path/to/data/molmobot-data/subset_20pct/FrankaPickAndPlaceNextToOmniCamConfig/part0/train
+      - /path/to/data/molmobot-data/subset_20pct/FrankaPickAndPlaceColorOmniCamConfig/part0/train
+    dataset_mixing_weights: [0.40, 0.25, 0.20, 0.15]
+    data_split: train
+    use_image_aug: true
+    video_height: 256
+    video_width: 256

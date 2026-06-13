@@ -1,0 +1,46 @@
+{
+  "title": "DenseCaptioning",
+  "prompts": {
+    "current_action": {
+      "constraint": "under 5 sentences, be concise",
+      "prompt": "Describe the physical movement of the agent. For example, if the agent is moving its arm, describe the movement of the arm. If the agent is moving its hand (or the gripper of robot arm), describe the movement of the hand or the gripper. If the agent is grasping the object, describe the grasping movement of the gripper or hand. if the agent is moving the object, describe the movement of the object. Focus on only the movements within the given frames. Do not hallucinate or make up the action."
+    },
+    "environment-simple": {
+      "constraint": "under 2 sentences, be concise.",
+      "prompt": "Describe the physical environment shown in the video. List the room type, major fixtures, and visible objects on the surfaces (such as specific food items, appliances, or tools)."
+    },
+    "environment-detailed": {
+      "constraint": "under 5 sentences",
+      "prompt": "Describe the physical environment shown in the video in detail. List the room type, major fixtures, and visible objects on the surfaces (such as specific food items, appliances, or tools). Note their spatial relationships or positions relative to one another."
+    },
+    "agent_arm_state": {
+      "constraint": "under 3 sentences",
+      "prompt": "Describe the exact physical posture and spatial location of the agent's arm throughout the trajectory. Focus strictly on the arm's pose (posture, gripper state, orientation) relative to the environment at the start, middle, and end of the clip, without describing the action itself."
+    },
+    "dense": {
+      "constraint": "≤ 5 short sentences, concise, no filler, no pronouns for target objects, written in present tense, robot or agent centric, front-loading the categories the action expert weighs most",
+      "prompt": "Describe the current subtask in a single dense observation that the action model can condition on. Include, in this order:\n  1. Name the target objects and fixtures explicitly (drawer, handle, mug, lever, burner knob, cabinet door). Do NOT use pronouns or generic words like \"object\".\n  2. Name every discrete movement of the gripper with an explicit verb (e.g. reach, lift, lower, grasp, release, rotate, press, slide, push, pull) — one verb per motion, in execution order.\n  3. State the direction of each motion with a cardinal or robot-frame adverb (left/right/up/down/forward/backward, clockwise/counterclockwise, inward/outward) — direction, not just displacement.\n  4. Refer to the robot component precisely: \"the gripper\", \"the arm\", \"the end-effector\" — avoid the generic \"robot\".\n  5. Mark the stage of the trajectory (\"currently\", \"then\", \"next\", \"about to\", \"final step\") so the policy can anchor itself in time.\n  6. Use a spatial preposition for every placement (on / in / into / onto / above / between / next to). Placement relations matter to the policy more than free-form prose.\nAvoid scene-setting, meta commentary, and restating the task description. Five sentences maximum."
+    },
+    "summary": {
+      "constraint": "≤ 4 short sentences, no filler, no pronouns for target objects, written in present tense, robot or agent centric",
+      "prompt": "Produce one caption that fuses scene grounding, current action, and brief reasoning. Include, in this order:\n  1. SCENE — name the surface or room and one or two key objects on it (one short sentence).\n  2. ACTION — name every gripper motion in execution order with explicit verbs (reach, lift, grasp, release, push, pull, rotate, slide) and direction (left/right/up/down/forward/inward/outward).\n  3. GOAL — state the immediate goal of the action with a spatial preposition (placing X into Y, pushing X onto Y, opening X).\n  4. OUTCOME — mark the trajectory stage (in progress, about to complete, completed).\nName target objects and fixtures explicitly (drawer, mug, fork, cabinet door); do NOT use pronouns or generic words like \"object\". Refer to the robot precisely as \"the gripper\", \"the arm\", or \"the end-effector\". Avoid scene aesthetics, meta commentary, and restating the original task description verbatim."
+    },
+    "agent_arm_end_state": {
+      "constraint": "under 5 sentences",
+      "prompt": "Describe the exact physical posture and spatial location of the agent's arm at the very end of these video clips. Focus strictly on the height of the arm, its orientation, and any specific object or part the gripper is touching, grasping, or aiming at.",
+      "descrption": "can be a post condition of the action"
+    },
+    "action_for_policy": {
+      "constraint": "under 5 sentences, be concise and specific",
+      "prompt": "Describe the robot's action as step-by-step instructions that another robot could follow to replicate the movement. Include: (1) the target object and its location (e.g., 'the red apple on the plate near the stove'), (2) the approach direction and grasp type (e.g., 'reach down from above and close the gripper around the handle'), (3) the movement trajectory (e.g., 'lift up 10cm, move left toward the cabinet'), and (4) the end condition (e.g., 'release the object when it is inside the cabinet'). Use spatial references relative to the robot and visible landmarks. Do not describe the scene or reason about the task — only describe the physical movements."
+    },
+    "reasoning-short": {
+      "constraint": "under 5 sentences, be concise.",
+      "prompt": "Reason about the agent's action and environment in the video clips given the task description. The reasoning should be detailed and specific to the video clips. e.g., why the agent is doing this action, what is the goal of the action, what was the previous action, what was the current action, what should be the next action, is the task completed, etc."
+    },
+    "reasoning-long": {
+      "constraint": "under 10 sentences, be precise and concise.",
+      "prompt": "Reason about the agent's action and environment in the video clips given the task description. The reasoning should be detailed and specific to the video clips. e.g., why the agent is doing this action, what is the goal of the action, what was the previous action, what was the current action, what should be the next action, is the task completed, etc."
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "CerealAndBowl": {
+    "current_action": "The robot arm reaches toward the right cabinet handle and grasps it to open the door, then open the left door. Then it picks up the cereal box from inside the cabinet and places it on the counter. Thne it picks up the bowl from inside the cabinet and places it on the counter. Finally it closes the cabinet doors.",
+    "environment-simple": "A kitchen scene with a cabinet containing cereal and a bowl. The counter has milk on it. The robot needs to open the cabinet, retrieve the cereal and bowl, and close the cabinet."
+  },
+  "KettleBoiling": {
+    "current_action": "The robot arm picks up the kettle from the counter and places it on the stove burner. Then it reaches for the stove knob and turns it on.",
+    "environment-simple": "A kitchen with a kettle on the counter and a stove with burners. The robot needs to move the kettle to a burner and turn the burner on."
+  },
+  "PrepareCoffee": {
+    "current_action": "The robot arm reaches toward the cabinet and picks up the mug. It places the mug under the coffee machine dispenser. Then it presses the start button on the coffee machine.",
+    "environment-simple": "A kitchen with a cabinet containing a mug and a coffee machine on the counter. The robot needs to retrieve the mug, place it under the dispenser, and start the machine."
+  },
+  "ChooseMeasuringCup": {
+    "current_action": "The robot arm grasps the drawer handle and pulls it open. Then it picks up the measuring cup from inside the drawer and places it on the counter.",
+    "environment-simple": "A kitchen with a drawer containing measuring cups. The robot needs to open the drawer and take out the correct measuring cup."
+  },
+  "ThawInSink": {
+    "current_action": "The robot arm picks up the {object} from the counter and places it in the sink. Then it reaches for the faucet handle and turns on the water.",
+    "environment-simple": "A kitchen with a frozen item on the counter and a sink. The robot needs to place the item in the sink and run water over it to thaw."
+  },
+  "FryingPanAdjustment": {
+    "current_action": "The robot arm grasps the frying pan handle and moves it from one burner to another burner on the stove. Then it turns on the new burner.",
+    "environment-simple": "A kitchen stove with a frying pan on one burner. The robot needs to move the pan to a different burner and turn that burner on."
+  },
+  "StartElectricKettle": {
+    "current_action": "The robot arm pushes the lid of the electric kettle closed. Then it presses down the lever to turn on the kettle.",
+    "environment-simple": "A kitchen counter with an electric kettle that has its lid open. The robot needs to close the lid and press the lever to start boiling."
+  },
+  "SnackSorting": {
+    "current_action": "The robot arm reaches into the open drawer and picks up snack items, placing them into the bowl on the counter. Then it pushes the drawer closed.",
+    "environment-simple": "A kitchen with an open drawer containing snacks and a bowl on the counter. The robot needs to sort snacks into the bowl and close the drawer."
+  },
+  "WashLettuce": {
+    "current_action": "The robot arm reaches for the faucet handle and turns on the water. Then it picks up the colander with lettuce and holds it under the running water.",
+    "environment-simple": "A kitchen sink with a colander of lettuce nearby. The robot needs to turn on the faucet and wash the lettuce under running water."
+  }
+}
