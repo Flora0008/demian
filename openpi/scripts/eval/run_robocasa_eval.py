@@ -135,10 +135,13 @@ class RoboCasaClient:
     def reset(self):
         self._reset_state()
 
-    def infer(self, obs: dict, instruction: str, reasoning_text: str | None = None) -> dict:
+    def act(self, obs: dict, instruction: str, reasoning_text: str | None = None) -> dict:
         """
         obs: gymnasium obs dict from RoboCasaGymEnv
         reasoning_text: optional fine-grained caption to inject for this step.
+        Consumes one action from the cached chunk. The remote VLA policy is
+        contacted only when that chunk is empty or exhausted; ordinary action
+        steps never send a new policy request.
         Returns {"action_dict": gym action dict, "viz": np.ndarray (H, W*3, 3)}
         """
         extracted = self._extract_observation(obs)
@@ -186,11 +189,17 @@ class RoboCasaClient:
         )
         ret = {"action_dict": _to_gym_action_dict(action), "raw_action": action, "viz": viz}
         ret["new_action_chunk"] = new_action_chunk
+        ret["policy_rpc"] = new_action_chunk
         if new_action_chunk and self._last_policy_timing is not None:
             ret["policy_timing"] = self._last_policy_timing
         if self._last_generated_text:
             ret["generated_text"] = self._last_generated_text
         return ret
+
+    # Backward-compatible name for callers outside this evaluation harness.
+    # It has the same chunked semantics as act(); it is not a per-step policy RPC.
+    def infer(self, obs: dict, instruction: str, reasoning_text: str | None = None) -> dict:
+        return self.act(obs, instruction, reasoning_text)
 
     def _extract_observation(self, obs: dict) -> dict:
         """
@@ -612,6 +621,7 @@ def run_episode(
     subgoal_switch_buffer: int = 20,
     record_video: bool = True,
     save_step_diagnostics: bool = False,
+    hierarchy=None,
 ) -> dict:
     """
     Runs one episode. Returns a result dict with keys:
@@ -634,6 +644,12 @@ def run_episode(
         initial_caption: Caption to use before the async instructor finishes (None = empty,
             or a GT template string as fallback).
     """
+    import time
+    episode_start_time = time.monotonic()
+    # Planner owns the phase / instruction, while the original asynchronous
+    # Instructor owns captions and is restarted when a new phase begins.
+    if hierarchy is not None and (subgoal_plan is not None or fg_caption_fn is not None):
+        raise ValueError("Hierarchy mode cannot share phase ownership with legacy modes")
     if init_state is not None:
         # NOTE: eval-dataset mode has rendering issues. Prefer seed-based eval.
         # See evaluation_protocol.md for details.
@@ -657,14 +673,27 @@ def run_episode(
             obj_name = m.group(1)
             reasoning_text = reasoning_text.replace("{object}", obj_name)
 
+    # Optional online hierarchy uses observation-only planning, not task-name plans.
+    if hierarchy is not None:
+        hierarchy.start(obs, instruction)
+        if hierarchy.stopped:
+            return {"success": False, "steps": 0, "subtask_successes": [], "video": [],
+                    "action_log": [], "instruction": instruction, "hierarchy": hierarchy.summary(),
+                    "episode_wall_seconds": time.monotonic() - episode_start_time}
+        instruction = hierarchy.instruction
+        reasoning_text = hierarchy.caption
+
     # --- Async caption generation ---
     # Start AR model caption generation in background thread immediately after
     # env.reset() so it runs concurrently with the first action chunks.
     caption_switch_step: int | None = None
     caption_gen_time_sec: float | None = None
     generated_caption: str | None = None
+    pending_caption: str | None = None
+    pending_caption_phase: int | None = None
     if instructor is not None:
         instructor.start_generation(obs, instruction)
+        pending_caption_phase = hierarchy.index if hierarchy is not None else None
         if sync_instructor:
             # 2-stage eval: block-wait for caption before first action step.
             print("  [sync-caption] Waiting for caption...")
@@ -674,6 +703,7 @@ def run_episode(
                     active_caption = result_text
                     generated_caption = result_text
                     caption_switch_step = 0
+                    pending_caption = None
                     caption_gen_time_sec = instructor.last_gen_time_sec()
                     print(f"  [sync-caption] Ready in {caption_gen_time_sec:.2f}s: \"{result_text[:80]}\"")
                     break
@@ -758,26 +788,35 @@ def run_episode(
             })
 
         # Check if async caption generation has completed.
-        if instructor is not None and caption_switch_step is None:
+        if instructor is not None and (hierarchy is not None or caption_switch_step is None):
             result_text = instructor.get_result()
             if result_text:
-                active_caption = result_text
+                pending_caption = result_text
                 generated_caption = result_text
-                caption_switch_step = step
+                if hierarchy is None:
+                    caption_switch_step = step
                 caption_gen_time_sec = instructor.last_gen_time_sec()
-                # Force a fresh action chunk so the model sees the caption immediately.
+                # Force the next policy request to start a fresh chunk. The
+                # caption is applied only at that chunk boundary.
                 client.actions_from_chunk_completed = client.open_loop_horizon
-                # Update video subtitle (truncate to keep frame size constant).
-                r = result_text if len(result_text) <= 100 else result_text[:97] + "..."
-                subtitle_lines[1] = f"Generated@{step}: {r}"
                 _gt_str = f"{caption_gen_time_sec:.2f}s" if caption_gen_time_sec is not None else "?"
-                print(f"  [async-caption] Injected at step {step} ({_gt_str}): \"{result_text[:80]}\"")
-                logging.info("[async-caption] Injected at step %d (%s): %s", step, _gt_str, result_text[:100])
+                print(f"  [async-caption] Ready at step {step} ({_gt_str}), pending chunk boundary: \"{result_text[:80]}\"")
+                logging.info("[async-caption] Ready at step %d (%s): %s", step, _gt_str, result_text[:100])
+
+        if pending_caption is not None and client.actions_from_chunk_completed >= client.open_loop_horizon:
+            active_caption = pending_caption
+            pending_caption = None
+            r = active_caption if len(active_caption) <= 100 else active_caption[:97] + "..."
+            subtitle_lines[1] = f"Generated@{step}: {r}"
+            _gt_str = f"{caption_gen_time_sec:.2f}s" if caption_gen_time_sec is not None else "?"
+            phase_label = f" phase {pending_caption_phase}" if pending_caption_phase is not None else ""
+            print(f"  [async-caption] Injected{phase_label} at chunk boundary step {step} ({_gt_str}): \"{active_caption[:80]}\"")
+            logging.info("[async-caption] Injected%s at chunk boundary step %d (%s): %s", phase_label, step, _gt_str, active_caption[:100])
 
         caption = fg_caption_fn(step) if fg_caption_fn else active_caption
         import time
         _infer_t0 = time.monotonic()
-        ret = client.infer(obs, instruction, reasoning_text=caption)
+        ret = client.act(obs, instruction, reasoning_text=caption)
         _infer_wall_time_sec = time.monotonic() - _infer_t0
         if record_video:
             video.append(_add_subtitle(ret["viz"], subtitle_lines, step, fixed_bar_lines=fixed_bar_lines))
@@ -884,10 +923,44 @@ def run_episode(
                 logging.info("[subgoal-plan] @ step %d: %s -> %s", step, prev_name, nxt["name"])
                 pending_switch_step = None
 
+        if hierarchy is not None and not done and not _truncated:
+            # The action just consumed may be the last action in the cached
+            # chunk.  Verification is scheduled only at this boundary, while
+            # any request already in flight is polled without waiting.
+            changed = hierarchy.observe(
+                obs,
+                step + 1,
+                at_chunk_boundary=(client.actions_from_chunk_completed >= client.open_loop_horizon),
+            )
+            if changed:
+                instruction = hierarchy.instruction
+                # Keep the previous caption while the new phase caption is
+                # generated asynchronously; inject it at the next chunk.
+                if instructor is None:
+                    active_caption = hierarchy.caption
+                if instructor is not None:
+                    pending_caption = None
+                    pending_caption_phase = hierarchy.index
+                    caption_switch_step = None
+                    instructor.start_generation(obs, instruction)
+                    print(f"  [async-caption] Started phase {hierarchy.index} generation at step {step + 1}")
+                    logging.info("[async-caption] Started phase %d generation at step %d", hierarchy.index, step + 1)
+                client.actions_from_chunk_completed = client.open_loop_horizon
+                subtitle_lines = [f"Task: {instruction}", f"Caption: {active_caption or ''}"]
+            # Visual completion never sets success=True. Only env info does that.
+            if hierarchy.stopped:
+                done = True
+        if hierarchy is not None and _truncated:
+            done = True
+
         if done:
             break
 
     result = {"success": success, "steps": step + 1, "subtask_successes": subtask_successes, "video": video, "action_log": action_log, "instruction": instruction}
+    if hierarchy is not None:
+        result["hierarchy"] = hierarchy.summary()
+        hierarchy.close()
+        result["episode_wall_seconds"] = time.monotonic() - episode_start_time
     if generated_texts:
         result["generated_texts"] = generated_texts
     if state_log:
@@ -949,7 +1022,7 @@ def run_episode_dynamic(
         current_instruction = task_instructions[instr_idx]
         active_instructions.append(current_instruction)
 
-        ret = client.infer(obs, current_instruction)
+        ret = client.act(obs, current_instruction)
         if record_video:
             video.append(ret["viz"])
 
@@ -1125,6 +1198,21 @@ class Args:
     the instruction. Lets the robot complete the current motion (e.g., release
     the mug) before seeing the next phase's instruction."""
 
+    hierarchy_url: Optional[str] = None
+    """Opt-in observation-only planner/verifier URL, e.g. http://localhost:8002."""
+    hierarchy_caption_mode: str = "planner"
+    """none | planner | instructor. Instructor is called afresh for EVERY phase."""
+    hierarchy_caption_url: Optional[str] = None
+    """Existing Qwen Instructor server URL, required for caption_mode=instructor."""
+    hierarchy_skills_file: Optional[str] = None
+    """Optional JSON list of supported skill names; shared across tasks, not a phase plan."""
+    hierarchy_check_every: int = 16
+    hierarchy_max_phases: int = 5
+    hierarchy_confirmations: int = 2
+    hierarchy_confidence: float = 0.85
+    hierarchy_phase_timeout: int = 240
+    hierarchy_max_replans: int = 2
+
 
 def build_env(task_name: str, args: Args):
     """Create a RoboCasa gymnasium environment for the given task.
@@ -1221,6 +1309,29 @@ def load_novel_tasks(path: str, num_shards: int = 1, task_shard: int = 0) -> lis
 
 
 def main(args: Args):
+    hierarchy_skills = []
+    hierarchy_config = None
+    if args.hierarchy_url:
+        from hierarchical_controller import HierarchicalController, HierarchyConfig, HTTPBackend
+        if any((args.subgoal_driven, args.dynamic_instructions_file,
+                args.gt_reasoning_file, args.caption_dir, args.vlm_captions_file,
+                args.fg_captions_path)):
+            raise ValueError("--hierarchy-url requires legacy subgoal/caption modes to be disabled")
+        if args.instructor_type and args.hierarchy_caption_mode == "instructor":
+            raise ValueError("Use either --hierarchy-caption-mode instructor or the legacy AsyncInstructor, not both")
+        if args.hierarchy_caption_mode == "instructor" and not args.hierarchy_caption_url:
+            raise ValueError("--hierarchy-caption-mode instructor needs --hierarchy-caption-url")
+        if args.hierarchy_skills_file:
+            hierarchy_skills = json.loads(Path(args.hierarchy_skills_file).read_text())
+            if not isinstance(hierarchy_skills, list) or not hierarchy_skills or not all(
+                isinstance(skill, str) and skill.strip() for skill in hierarchy_skills
+            ):
+                raise ValueError("Skills file must be a nonempty JSON list of skill names")
+        hierarchy_config = HierarchyConfig(check_every=args.hierarchy_check_every,
+            max_phases=args.hierarchy_max_phases,
+            confirmations=args.hierarchy_confirmations, confidence_threshold=args.hierarchy_confidence,
+            phase_timeout=args.hierarchy_phase_timeout, max_replans=args.hierarchy_max_replans,
+            caption_mode=args.hierarchy_caption_mode)
     # --- Novel vocabulary override mode ---
     novel_tasks: list[dict] | None = None
     if args.prompt_override:
@@ -1497,6 +1608,10 @@ def main(args: Args):
                     subgoal_switch_buffer=args.subgoal_switch_buffer,
                     record_video=args.save_video,
                     save_step_diagnostics=args.save_step_diagnostics,
+                    hierarchy=HierarchicalController(
+                        HTTPBackend(args.hierarchy_url, args.hierarchy_caption_url),
+                        hierarchy_config, skills=hierarchy_skills,
+                    ) if args.hierarchy_url else None,
                 )
             if result["success"]:
                 successes += 1
