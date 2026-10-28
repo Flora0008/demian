@@ -664,6 +664,8 @@ def run_episode(
         if not lock_instruction:
             instruction = obs.get("annotation.human.task_description", instruction) or instruction
 
+    client.reset()
+
     # Resolve {object} placeholder in reasoning_text using the episode's task description.
     # E.g., instruction="Pick the egg from the drawer" → replaces {object} with "egg".
     if reasoning_text and "{object}" in reasoning_text:
@@ -677,6 +679,7 @@ def run_episode(
     if hierarchy is not None:
         hierarchy.start(obs, instruction)
         if hierarchy.stopped:
+            hierarchy.close()
             return {"success": False, "steps": 0, "subtask_successes": [], "video": [],
                     "action_log": [], "instruction": instruction, "hierarchy": hierarchy.summary(),
                     "episode_wall_seconds": time.monotonic() - episode_start_time}
@@ -768,6 +771,9 @@ def run_episode(
     fixed_bar_lines = max(_line_counts) + 1  # +1 for safety padding
 
     for step in range(max_steps):
+        if hierarchy is not None and instructor is None:
+            active_caption = hierarchy.caption
+            subtitle_lines[1] = f"Caption: {active_caption or ''}"
         step_diag = None
         if save_step_diagnostics:
             step_diag = {
@@ -793,19 +799,15 @@ def run_episode(
             if result_text:
                 pending_caption = result_text
                 generated_caption = result_text
-                if hierarchy is None:
-                    caption_switch_step = step
                 caption_gen_time_sec = instructor.last_gen_time_sec()
-                # Force the next policy request to start a fresh chunk. The
-                # caption is applied only at that chunk boundary.
-                client.actions_from_chunk_completed = client.open_loop_horizon
                 _gt_str = f"{caption_gen_time_sec:.2f}s" if caption_gen_time_sec is not None else "?"
                 print(f"  [async-caption] Ready at step {step} ({_gt_str}), pending chunk boundary: \"{result_text[:80]}\"")
                 logging.info("[async-caption] Ready at step %d (%s): %s", step, _gt_str, result_text[:100])
 
-        if pending_caption is not None and client.actions_from_chunk_completed >= client.open_loop_horizon:
+        if pending_caption is not None and client.actions_from_chunk_completed in (0, client.open_loop_horizon):
             active_caption = pending_caption
             pending_caption = None
+            caption_switch_step = step
             r = active_caption if len(active_caption) <= 100 else active_caption[:97] + "..."
             subtitle_lines[1] = f"Generated@{step}: {r}"
             _gt_str = f"{caption_gen_time_sec:.2f}s" if caption_gen_time_sec is not None else "?"
@@ -934,8 +936,8 @@ def run_episode(
             )
             if changed:
                 instruction = hierarchy.instruction
-                # Keep the previous caption while the new phase caption is
-                # generated asynchronously; inject it at the next chunk.
+                # A caption belongs to one phase; clear it until this phase's result is ready.
+                active_caption = None
                 if instructor is None:
                     active_caption = hierarchy.caption
                 if instructor is not None:
@@ -1317,8 +1319,8 @@ def main(args: Args):
                 args.gt_reasoning_file, args.caption_dir, args.vlm_captions_file,
                 args.fg_captions_path)):
             raise ValueError("--hierarchy-url requires legacy subgoal/caption modes to be disabled")
-        if args.instructor_type and args.hierarchy_caption_mode == "instructor":
-            raise ValueError("Use either --hierarchy-caption-mode instructor or the legacy AsyncInstructor, not both")
+        if args.instructor_type:
+            raise ValueError("Hierarchy mode uses --hierarchy-caption-mode instructor, not legacy --instructor-type")
         if args.hierarchy_caption_mode == "instructor" and not args.hierarchy_caption_url:
             raise ValueError("--hierarchy-caption-mode instructor needs --hierarchy-caption-url")
         if args.hierarchy_skills_file:

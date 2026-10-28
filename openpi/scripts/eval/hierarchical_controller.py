@@ -1,7 +1,7 @@
 """Optional observation-only planner/verifier. No task-name registry or env access.
 
-This first prototype is synchronous: simulation pauses for HTTP inference. That
-avoids stale captions/verdicts; it is NOT the asynchronous DeMiAn paper method.
+Planning, captions and verification run in the background.
+Caption updates and phase transitions are applied only at chunk boundaries.
 Confidence is an uncalibrated VLM score, never benchmark ground truth.
 """
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -126,6 +126,7 @@ class HierarchyConfig:
     max_phases: int = MAX_PHASES
     caption_mode: str = "planner"  # none | planner | instructor
     async_verifier: bool = True
+    async_planner: bool = True
 
     def __post_init__(self):
         if min(self.check_every, self.min_phase_steps, self.confirmations, self.phase_timeout) < 1:
@@ -155,10 +156,15 @@ class HierarchicalController:
         self.inference_seconds = 0.0
         self._event_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="demian-verifier")
+        self._caption_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="demian-caption")
+        self._plan_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="demian-planner")
+        self._plan_future: Future | None = None
         self._verify_future: Future | None = None
+        self._caption_future: Future | None = None
         self._verify_request = None
         self._pending_transition = None
         self._closed = False
+        self.caption = None
 
     @property
     def stopped(self):
@@ -166,6 +172,7 @@ class HierarchicalController:
 
     def _call(self, operation, payload, step):
         started = time.monotonic()
+        generation = self.generation
         try:
             response = self.backend(operation, payload)
         except Exception as exc:
@@ -177,7 +184,7 @@ class HierarchicalController:
             with self._event_lock:
                 self.inference_seconds += time.monotonic() - started
         with self._event_lock:
-            self.events.append({"event": operation, "step": step, "generation": self.generation,
+            self.events.append({"event": operation, "step": step, "generation": generation,
                                 "response": response})
         return response
 
@@ -195,34 +202,49 @@ class HierarchicalController:
 
     def _plan(self, obs, step, feedback):
         self.generation += 1
-        value = self._call("plan", {
+        for future in (self._caption_future, self._verify_future):
+            if future is not None:
+                future.cancel()
+        self._caption_future = self._verify_future = None
+        self._verify_request = None
+        self.instruction = self.task
+        self.caption, self.caption_type = None, "none"
+        self.index = -1
+        payload = {
             "task": self.task, "images": self.encoder(obs), "skills": self.skills,
             "history": self.history[-12:], "feedback": feedback,
             "caption_mode": self.config.caption_mode,
             "max_phases": self.config.max_phases,
-        }, step)
+        }
+        if self.config.async_planner:
+            self._plan_future = self._plan_executor.submit(self._call, "plan", payload, step)
+            self.events.append({"event": "plan_pending", "step": step, "generation": self.generation})
+        else:
+            self._install_plan(self._call("plan", payload, step), obs, step)
+
+    def _install_plan(self, value, obs, step):
         self.phases = parse_plan(value, self.skills, self.config.max_phases)
         self.index = 0
         self._enter(obs, step)
 
     def _enter(self, obs, step):
+        if self._caption_future is not None:
+            self._caption_future.cancel()
+            self._caption_future = None
         self.phase = self.phases[self.index]
         self.phase_start_images = self.encoder(obs)
         self.phase_start_step = step
         self.last_check = step
         self.success_streak = 0
         self.instruction = self.phase["instruction"]
-        self.caption = None
-        self.caption_type = "none"
+        self.caption, self.caption_type = None, "none"
         if self.config.caption_mode == "planner":
             self.caption = self.phase["caption"] or None
             self.caption_type = self.phase["caption_type"]
         elif self.config.caption_mode == "instructor":
-            # Fresh images + current atomic instruction for EVERY phase. No old future.
-            response = self._call("caption", {"images": self.phase_start_images,
-                                              "task_description": self.instruction}, step)
-            self.caption = short_text(response.get("caption"), "Instructor caption", 1200, allow_empty=True) or None
-            self.caption_type = "unspecified_by_instructor" if self.caption else "none"
+            self._caption_future = self._caption_executor.submit(
+                self._call, "caption", {"images": self.phase_start_images,
+                                        "task_description": self.instruction}, step)
         self.events.append({"event": "phase_enter", "step": step, "generation": self.generation,
                             "phase": self.index, "instruction": self.instruction,
                             "caption": self.caption, "caption_type": self.caption_type,
@@ -305,9 +327,40 @@ class HierarchicalController:
         """
         if self.stopped:
             return False
+        if self._plan_future is not None:
+            if not at_chunk_boundary or not self._plan_future.done():
+                return False
+            future, self._plan_future = self._plan_future, None
+            try:
+                self._install_plan(future.result(), obs, step)
+                return True
+            except Exception as exc:
+                self._abort(exc, step)
+                return False
         self._poll_verifier(obs, step)
+        if self.stopped:
+            return False
+        if (at_chunk_boundary and self._pending_transition is None
+                and step - self.phase_start_step >= self.config.phase_timeout):
+            self._pending_transition = ("replan", "Phase timeout: no confirmed completion")
+            if self._verify_future is not None:
+                self._verify_future.cancel()
+                self._verify_future = None
+                self._verify_request = None
         if at_chunk_boundary and self._pending_transition is not None:
             return self._apply_pending(obs, step)
+        if at_chunk_boundary and self._caption_future is not None and self._caption_future.done():
+            future, self._caption_future = self._caption_future, None
+            try:
+                response = future.result()
+                self.caption = short_text(response.get("caption"), "Instructor caption", 1200, allow_empty=True) or None
+                self.caption_type = "unspecified_by_instructor" if self.caption else "none"
+                self.events.append({"event": "caption_applied", "step": step,
+                                    "generation": self.generation, "phase": self.index,
+                                    "caption": self.caption})
+            except Exception as exc:
+                self._abort(exc, step)
+                return False
         if not at_chunk_boundary or step - self.last_check < self.config.check_every:
             return False
         if step - self.phase_start_step < self.config.min_phase_steps:
@@ -332,13 +385,22 @@ class HierarchicalController:
             self._closed = True
             if self._verify_future is not None:
                 self._verify_future.cancel()
+            if self._caption_future is not None:
+                self._caption_future.cancel()
+            if self._plan_future is not None:
+                self._plan_future.cancel()
             self._executor.shutdown(wait=False, cancel_futures=True)
+            self._caption_executor.shutdown(wait=False, cancel_futures=True)
+            self._plan_executor.shutdown(wait=False, cancel_futures=True)
 
     def summary(self):
+        with self._event_lock:
+            events = list(self.events)
+            inference_seconds = self.inference_seconds
         return {"config": asdict(self.config), "status": "error" if self.error else
-                ("plan_finished" if self.finished else "running"), "error": self.error,
-                "task": self.task, "replans": self.replans, "events": self.events,
-                "inference_seconds": self.inference_seconds,
+                ("plan_finished" if self.finished else ("planning" if self._plan_future is not None else "running")), "error": self.error,
+                "task": self.task, "replans": self.replans, "events": events,
+                "inference_seconds": inference_seconds,
                 "note": "Visual completion is not benchmark success. Verifier runs asynchronously and transitions apply at chunk boundaries."}
 
 

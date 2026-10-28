@@ -31,9 +31,9 @@ task constraints and ordering dependencies. Do not invent unavailable objects or
 robot capabilities. If a skills list is supplied, each skill must match it exactly;
 it describes supported skills, not a task-specific plan. If infeasible, return an
 empty phases list (the controller will stop with a validation error).
-Output ONLY a JSON object: {"phases": [{"skill": "...", "instruction": "...",
+Output ONLY a JSON object: {{"phases": [{{"skill": "...", "instruction": "...",
 "success_criteria": "observable completed outcome, including release when needed",
-"caption_type": "current_action", "caption": "short grounded action/scene guidance"}]}.
+"caption_type": "current_action", "caption": "short grounded action/scene guidance"}}]}}.
 Return 1 to {max_phases} phases when feasible. Instructions are English and at most 300 characters.
 Captions are at most 400 characters; success_criteria at most 600.
 {CAPTION_TYPE_DESCRIPTIONS}
