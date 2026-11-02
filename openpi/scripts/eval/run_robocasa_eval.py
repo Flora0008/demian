@@ -679,12 +679,12 @@ def run_episode(
     if hierarchy is not None:
         hierarchy.start(obs, instruction)
         if hierarchy.stopped:
-            hierarchy.close()
-            return {"success": False, "steps": 0, "subtask_successes": [], "video": [],
-                    "action_log": [], "instruction": instruction, "hierarchy": hierarchy.summary(),
-                    "episode_wall_seconds": time.monotonic() - episode_start_time}
+            # Missing planning must not consume the environment's entire action budget.
+            hierarchy.enter_fallback(0, hierarchy.error or "initial_plan_failed")
         instruction = hierarchy.instruction
         reasoning_text = hierarchy.caption
+        if hierarchy.in_fallback:
+            instructor = None
 
     # --- Async caption generation ---
     # Start AR model caption generation in background thread immediately after
@@ -938,9 +938,13 @@ def run_episode(
                 instruction = hierarchy.instruction
                 # A caption belongs to one phase; clear it until this phase's result is ready.
                 active_caption = None
+                if hierarchy.in_fallback:
+                    # An in-flight legacy caption also belongs to the abandoned phase.
+                    instructor = None
+                    pending_caption = pending_caption_phase = None
                 if instructor is None:
                     active_caption = hierarchy.caption
-                if instructor is not None:
+                if instructor is not None and not hierarchy.in_fallback:
                     pending_caption = None
                     pending_caption_phase = hierarchy.index
                     caption_switch_step = None
@@ -949,9 +953,8 @@ def run_episode(
                     logging.info("[async-caption] Started phase %d generation at step %d", hierarchy.index, step + 1)
                 client.actions_from_chunk_completed = client.open_loop_horizon
                 subtitle_lines = [f"Task: {instruction}", f"Caption: {active_caption or ''}"]
-            # Visual completion never sets success=True. Only env info does that.
-            if hierarchy.stopped:
-                done = True
+            # Only the environment or max_steps ends a rollout; visual completion
+            # and hierarchy errors hand control back to the full task instead.
         if hierarchy is not None and _truncated:
             done = True
 

@@ -3,13 +3,16 @@ import ast
 import contextlib
 import io
 import logging
+import json
 from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+import urllib.error
 
-from hierarchical_controller import HierarchicalController, HierarchyConfig, parse_object, parse_plan, parse_verdict
+from hierarchical_controller import HTTPBackend, HierarchicalController, HierarchyConfig, parse_object, parse_plan, parse_verdict
 
 
 def phase(name):
@@ -62,6 +65,72 @@ def observe(ctrl, obs, step):
 
 
 class ControllerTests(unittest.TestCase):
+    def test_http_failure_keeps_bounded_server_diagnostic(self):
+        error = urllib.error.HTTPError("http://localhost/plan", 422, "bad output", {},
+                                       io.BytesIO(b'{"error":"Planner must return 1..5 phases"}'))
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "plan HTTP 422.*1..5 phases"):
+                HTTPBackend("http://localhost")("plan", {})
+
+    def test_caption_error_abstains_without_disabling_verification(self):
+        backend = Backend()
+        def broken_caption(op, payload):
+            if op == "caption":
+                raise ValueError("bad caption")
+            return backend(op, payload)
+        ctrl = controller(broken_caption, caption_mode="instructor")
+        try:
+            ctrl.start({"frame": 0}, "task")
+            with self.assertRaises(ValueError):
+                ctrl._caption_future.result(timeout=1)
+            observe(ctrl, {"frame": 1}, 1)
+            self.assertIsNone(ctrl.caption)
+            self.assertFalse(ctrl.stopped)
+            self.assertTrue(observe(ctrl, {"frame": 2}, 2))
+            self.assertEqual(ctrl.instruction, "two")
+        finally:
+            ctrl.close()
+
+    def test_verifier_error_retries_once_then_falls_back_at_boundary(self):
+        backend = Backend()
+        def broken_verifier(op, payload):
+            if op == "verify":
+                raise ValueError("invalid verdict")
+            return backend(op, payload)
+        ctrl = controller(broken_verifier, async_verifier=True)
+        try:
+            ctrl.start({"frame": 0}, "task")
+            observe(ctrl, {"frame": 1}, 1)
+            with self.assertRaises(ValueError):
+                ctrl._verify_future.result(timeout=1)
+            observe(ctrl, {"frame": 2}, 2)
+            self.assertFalse(ctrl.stopped)
+            with self.assertRaises(ValueError):
+                ctrl._verify_future.result(timeout=1)
+            ctrl.observe({"frame": 3}, 3, at_chunk_boundary=False)
+            self.assertEqual(ctrl.instruction, "one")
+            self.assertTrue(observe(ctrl, {"frame": 4}, 4))
+            self.assertEqual((ctrl.instruction, ctrl.caption), ("task", None))
+            self.assertEqual(ctrl.summary()["status"], "fallback")
+        finally:
+            ctrl.close()
+
+    def test_synchronous_verifier_errors_use_the_same_bounded_recovery(self):
+        backend = Backend()
+        def broken(op, payload):
+            if op == "verify":
+                raise ValueError("invalid verdict")
+            return backend(op, payload)
+        ctrl = controller(broken)
+        try:
+            ctrl.start({"frame": 0}, "task")
+            for step in range(1, 4):
+                observe(ctrl, {"frame": step}, step)
+            self.assertEqual(ctrl.summary()["status"], "fallback")
+            self.assertEqual(ctrl.instruction, "task")
+        finally:
+            ctrl.close()
+
     def test_async_plan_and_replan_use_original_task_without_caption(self):
         backend = Backend(verdicts=[verdict("failure")])
         release = threading.Event()
@@ -94,7 +163,7 @@ class ControllerTests(unittest.TestCase):
             release.set()
             ctrl.close()
 
-    def test_async_planner_error_stops_episode(self):
+    def test_async_planner_error_returns_control_at_boundary(self):
         def broken(op, payload):
             raise TimeoutError("planner unavailable")
         ctrl = controller(broken, async_planner=True)
@@ -102,9 +171,11 @@ class ControllerTests(unittest.TestCase):
             ctrl.start({"frame": 0}, "task")
             with self.assertRaises(TimeoutError):
                 ctrl._plan_future.result(timeout=1)
-            observe(ctrl, {"frame": 2}, 2)
+            self.assertTrue(observe(ctrl, {"frame": 2}, 2))
             self.assertTrue(ctrl.stopped)
             self.assertIn("planner unavailable", ctrl.error)
+            self.assertEqual((ctrl.instruction, ctrl.caption), ("task", None))
+            self.assertEqual(ctrl.summary()["status"], "fallback")
         finally:
             ctrl.close()
 
@@ -219,7 +290,8 @@ class ControllerTests(unittest.TestCase):
             self.assertTrue(backend.started.wait(timeout=1))
             observe(ctrl, {"frame": 8}, 8)
             self.assertTrue(ctrl.stopped)
-            self.assertIn("timeout", ctrl.error)
+            self.assertIn("timeout", ctrl.fallback_reason)
+            self.assertIsNone(ctrl.error)
         finally:
             backend.release.set()
             ctrl.close()
@@ -269,7 +341,8 @@ class ControllerTests(unittest.TestCase):
             observe(ctrl, {"frame": t}, t)
         self.assertTrue(ctrl.stopped)
         self.assertFalse(ctrl.finished)
-        self.assertIn("timeout", ctrl.error)
+        self.assertIn("timeout", ctrl.fallback_reason)
+        self.assertEqual(ctrl.replans, 0)
 
     def test_no_caption_ablation(self):
         ctrl = controller(caption_mode="none")
@@ -390,12 +463,81 @@ class EvalIntegrationTests(unittest.TestCase):
                                           (4, "two", "caption for two"),
                                           (6, "two", "caption for two"),
                                           (8, "three", "caption for three"),
-                                          (10, "three", "caption for three")])
-        self.assertEqual(result["steps"], 12)
+                                          (10, "three", "caption for three"),
+                                          (12, "whole task", None)])
+        self.assertEqual(result["steps"], 14)
 
     def test_verifier_success_cannot_forge_benchmark_success(self):
         result, _ = self.rollout()
-        self.assertEqual(result["hierarchy"]["status"], "plan_finished")
+        self.assertEqual(result["hierarchy"]["status"], "fallback")
+        self.assertEqual(result["hierarchy"]["fallback_reason"], "plan_finished")
+        self.assertFalse(result["success"])
+
+    def test_environment_can_succeed_after_visual_plan_finishes(self):
+        result, _ = self.rollout(success_at=14)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["steps"], 14)
+
+    def test_initial_planner_failure_preserves_environment_budget(self):
+        def broken(op, payload):
+            raise TimeoutError("no planner")
+        client = FakeClient()
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self.run_episode(FakeEnv(success_at=5), client, "whole task", 8,
+                                      True, record_video=False, hierarchy=controller(broken))
+        self.assertTrue(result["success"])
+        self.assertEqual(result["steps"], 5)
+        self.assertTrue(all(req[1:] == ("whole task", None) for req in client.requests))
+
+    def test_initial_fallback_does_not_start_legacy_instructor(self):
+        class Instructor:
+            def start_generation(self, obs, instruction):
+                raise AssertionError("task-only fallback must not request a caption")
+        def broken(op, payload):
+            raise TimeoutError("no planner")
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self.run_episode(FakeEnv(success_at=3), FakeClient(), "task", 8, True,
+                                      record_video=False, hierarchy=controller(broken),
+                                      instructor=Instructor())
+        self.assertTrue(result["success"])
+
+    def test_replan_exhaustion_preserves_actions_and_discards_late_caption(self):
+        release = threading.Event()
+        backend = Backend(verdicts=[verdict("ongoing")] * 20)
+        def delayed(op, payload):
+            if op == "caption":
+                release.wait(timeout=2)
+            return backend(op, payload)
+        ctrl = controller(delayed, caption_mode="instructor", max_replans=0, phase_timeout=2)
+        class Env(FakeEnv):
+            def step(self, action):
+                if self.t == 2:
+                    release.set()
+                return super().step(action)
+        client = FakeClient()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = self.run_episode(Env(success_at=5), client, "whole task", 8,
+                                          True, record_video=False, hierarchy=ctrl)
+            self.assertTrue(result["success"])
+            self.assertEqual(client.requests, [(0, "one", None), (2, "whole task", None),
+                                              (4, "whole task", None)])
+            self.assertEqual(result["hierarchy"]["replans"], 0)
+        finally:
+            release.set()
+            ctrl.close()
+
+    def test_truncation_still_ends_fallback_rollout(self):
+        class Env(FakeEnv):
+            def step(self, action):
+                obs, reward, done, _, info = super().step(action)
+                return obs, reward, done, self.t == 3, info
+        def broken(op, payload):
+            raise TimeoutError("no planner")
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = self.run_episode(Env(), FakeClient(), "task", 8, True,
+                                      record_video=False, hierarchy=controller(broken))
+        self.assertEqual(result["steps"], 3)
         self.assertFalse(result["success"])
 
     def test_env_success_remains_authoritative(self):
@@ -508,6 +650,52 @@ class EvalIntegrationTests(unittest.TestCase):
 
 
 class ServerPromptTests(unittest.TestCase):
+    def load_model_logic(self, outputs):
+        # Replace only heavyweight generation; execute the actual server validation/retry code.
+        path = Path(__file__).with_name("qwen_hierarchy_server.py")
+        tree = ast.parse(path.read_text())
+        nodes = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+                 and n.name in {"plan_system", "HierarchyModel", "InvalidModelOutput"}]
+        namespace = {"CaptionModel": object, "MAX_PHASES": 5, "json": json,
+                     "torch": SimpleNamespace(no_grad=lambda: lambda fn: fn),
+                     "CAPTION_TYPE_DESCRIPTIONS": "types", "VERIFY_SYSTEM": "verify",
+                     "parse_object": parse_object, "parse_plan": parse_plan,
+                     "parse_verdict": parse_verdict}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
+        model = object.__new__(namespace["HierarchyModel"])
+        model.max_phases = 5
+        self.messages = []
+        def generate(images, messages):
+            self.messages.append(list(messages))
+            return outputs.pop(0)
+        model._generate = generate
+        return model
+
+    def test_invalid_plan_is_repaired_once_without_truncation(self):
+        model = self.load_model_logic([json.dumps({"phases": [phase(str(i)) for i in range(6)]}),
+                                      json.dumps({"phases": [phase("all remaining work")]})])
+        result = model.structured([], {"max_phases": 5}, "plan")
+        self.assertEqual(result["phases"][0]["instruction"], "all remaining work")
+        self.assertEqual(len(self.messages), 2)
+        self.assertIn("1..5 phases", self.messages[1][-1]["content"])
+
+    def test_invalid_plan_after_repair_reports_output_error(self):
+        for text in ('{"phases": []}', '{"phases": "wrong"}', 'not JSON'):
+            with self.subTest(text=text):
+                model = self.load_model_logic([text, text])
+                with self.assertRaisesRegex(ValueError, "Invalid plan output after 2 attempts"):
+                    model.structured([], {}, "plan")
+                self.assertEqual(len(self.messages), 2)
+
+    def test_valid_plan_and_invalid_verdict_are_not_retried(self):
+        model = self.load_model_logic([json.dumps({"phases": [phase("one")]})])
+        self.assertEqual(len(model.structured([], {}, "plan")["phases"]), 1)
+        self.assertEqual(len(self.messages), 1)
+        model = self.load_model_logic(['{"status":"invalid"}'])
+        with self.assertRaises(ValueError):
+            model.structured([], {}, "verify")
+        self.assertEqual(len(self.messages), 1)
+
     def test_plan_prompt_formats_literal_json(self):
         path = Path(__file__).with_name("qwen_hierarchy_server.py")
         tree = ast.parse(path.read_text())

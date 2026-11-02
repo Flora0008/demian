@@ -30,7 +30,7 @@ feedback to plan only the REMAINING work. One phase is a skill-sized instruction
 task constraints and ordering dependencies. Do not invent unavailable objects or
 robot capabilities. If a skills list is supplied, each skill must match it exactly;
 it describes supported skills, not a task-specific plan. If infeasible, return an
-empty phases list (the controller will stop with a validation error).
+empty phases list (validation will fail and the controller will fall back to the full task).
 Output ONLY a JSON object: {{"phases": [{{"skill": "...", "instruction": "...",
 "success_criteria": "observable completed outcome, including release when needed",
 "caption_type": "current_action", "caption": "short grounded action/scene guidance"}}]}}.
@@ -55,6 +55,10 @@ Output ONLY {"status": "ongoing|success|failure|uncertain", "confidence": 0.0,
 confidence is a heuristic score, not a calibrated probability. evidence <= 600 characters."""
 
 
+class InvalidModelOutput(ValueError):
+    """The model responded, but its structured output is unusable."""
+
+
 class HierarchyModel(CaptionModel):
     def __init__(self, model_path, device, max_new_tokens, max_phases=MAX_PHASES):
         super().__init__(model_path, device, max_new_tokens)
@@ -74,17 +78,37 @@ class HierarchyModel(CaptionModel):
         content = [{"type": "image", "image": im} for im in images]
         content.append({"type": "text", "text": json.dumps(payload, ensure_ascii=False)})
         messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
+        # Repair one invalid plan in the same background request; never truncate required actions.
+        attempts = 2 if operation == "plan" else 1
+        for attempt in range(attempts):
+            generated = self._generate(images, messages)
+            try:
+                value = parse_object(generated)
+                if operation == "plan":
+                    return {"phases": parse_plan(value, payload.get("skills", []), requested_max)}
+                return parse_verdict(value)
+            except ValueError as exc:
+                if attempt + 1 == attempts:
+                    raise InvalidModelOutput(
+                        f"Invalid {operation} output after {attempts} attempts: {exc}"
+                    ) from exc
+                messages.extend([
+                    {"role": "assistant", "content": generated},
+                    {"role": "user", "content": (
+                        f"Validation failed: {exc}. Return a complete valid plan of 1 to "
+                        f"{requested_max} phases. Preserve every necessary remaining action; "
+                        "merge related actions if needed, do not truncate the plan. JSON only."
+                    )},
+                ])
+
+    def _generate(self, images, messages):
         text = self.processor.apply_chat_template(messages, tokenize=False,
                                                   add_generation_prompt=True, enable_thinking=False)
         inputs = self.processor(text=[text], images=images, return_tensors="pt", padding=True).to(self.device)
         output = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens,
                                      do_sample=False, use_cache=True)
-        generated = self.processor.tokenizer.decode(output[0, inputs["input_ids"].shape[1]:],
-                                                    skip_special_tokens=True).strip()
-        value = parse_object(generated)
-        if operation == "plan":
-            return {"phases": parse_plan(value, payload.get("skills", []), requested_max)}
-        return parse_verdict(value)
+        return self.processor.tokenizer.decode(output[0, inputs["input_ids"].shape[1]:],
+                                               skip_special_tokens=True).strip()
 
 
 def make_handler(model):
@@ -110,6 +134,8 @@ def make_handler(model):
                 if not 0 < size <= 8_000_000:
                     raise ValueError("Invalid request size")
                 body = json.loads(self.rfile.read(size))
+                if not isinstance(body, dict):
+                    raise ValueError("Expected a JSON request object")
                 images = body.pop("images", None)
                 start = body.pop("start_images", [])
                 if not isinstance(images, list) or len(images) != 3:
@@ -117,10 +143,19 @@ def make_handler(model):
                 if operation == "verify" and (not isinstance(start, list) or len(start) != 3):
                     raise ValueError("Expected three phase-start images")
                 decoded = decode_images({"images": (start if operation == "verify" else []) + images})
+            except (ValueError, TypeError, OSError) as exc:
+                self.respond(400, {"error": str(exc), "error_type": "invalid_request"})
+                return
+            try:
                 self.respond(200, model.structured(decoded, body, operation))
+            except InvalidModelOutput as exc:
+                logging.exception("Hierarchy output validation failed")
+                self.respond(422, {"error": str(exc), "error_type": "invalid_model_output"})
+            except ValueError as exc:
+                self.respond(400, {"error": str(exc), "error_type": "invalid_request"})
             except Exception as exc:
                 logging.exception("Hierarchy request failed")
-                self.respond(422, {"error": str(exc)})
+                self.respond(500, {"error": str(exc), "error_type": "inference_error"})
 
     return Handler
 

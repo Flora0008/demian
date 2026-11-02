@@ -12,6 +12,7 @@ import json
 import math
 import threading
 import time
+import urllib.error
 import urllib.request
 
 
@@ -108,8 +109,13 @@ class HTTPBackend:
             url = self.url + "/" + operation
         request = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                          headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            value = json.loads(response.read())
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                value = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            # Keep the bounded server diagnostic (e.g. invalid phase count), not image payloads.
+            detail = exc.read(8192).decode("utf-8", errors="replace")
+            raise RuntimeError(f"{operation} HTTP {exc.code}: {detail}") from exc
         if not isinstance(value, dict):
             raise ValueError("Server returned a non-object response")
         return value
@@ -153,6 +159,10 @@ class HierarchicalController:
         self.generation = 0
         self.finished = False
         self.error = None
+        self.in_fallback = False
+        self.fallback_reason = None
+        self.fallback_step = None
+        self._verify_errors = 0
         self.inference_seconds = 0.0
         self._event_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="demian-verifier")
@@ -168,7 +178,29 @@ class HierarchicalController:
 
     @property
     def stopped(self):
-        return self.finished or self.error is not None
+        """Hierarchy control has stopped; this must not terminate the environment."""
+        return self.in_fallback or self.finished or self.error is not None
+
+    def enter_fallback(self, step, reason):
+        """Return to the full task without reusing phase-specific guidance."""
+        if self.in_fallback:
+            return False
+        self.in_fallback = True
+        self.fallback_reason, self.fallback_step = reason, step
+        self.generation += 1
+        for name in ("_plan_future", "_verify_future", "_caption_future"):
+            future = getattr(self, name)
+            if future is not None:
+                future.cancel()
+            setattr(self, name, None)
+        self._pending_transition = self._verify_request = None
+        self.index = -1
+        self.instruction = self.task
+        self.caption, self.caption_type = None, "none"
+        with self._event_lock:
+            self.events.append({"event": "fallback", "step": step, "reason": reason,
+                                "generation": self.generation})
+        return True
 
     def _call(self, operation, payload, step):
         started = time.monotonic()
@@ -236,6 +268,7 @@ class HierarchicalController:
         self.phase_start_step = step
         self.last_check = step
         self.success_streak = 0
+        self._verify_errors = 0
         self.instruction = self.phase["instruction"]
         self.caption, self.caption_type = None, "none"
         if self.config.caption_mode == "planner":
@@ -254,7 +287,9 @@ class HierarchicalController:
         self.history.append({"instruction": self.instruction, "outcome": "not_confirmed",
                              "evidence": feedback})
         if self.replans >= self.config.max_replans:
-            raise RuntimeError("Replan budget exhausted: " + feedback)
+            # The VLM budget limits planning calls, not the episode's remaining action budget.
+            self.enter_fallback(step, "replan_budget_exhausted: " + feedback)
+            return
         self.replans += 1
         self._plan(obs, step, feedback)
 
@@ -271,7 +306,7 @@ class HierarchicalController:
                     self.finished = True
                     with self._event_lock:
                         self.events.append({"event": "plan_finished", "step": step})
-                    return False
+                    return self.enter_fallback(step, "plan_finished")
                 self.index += 1
                 self._enter(obs, step)
                 return True
@@ -280,7 +315,7 @@ class HierarchicalController:
             return True
         except Exception as exc:
             self._abort(exc, step)
-        return False
+        return self.enter_fallback(step, self.error)
 
     def _poll_verifier(self, obs, step):
         future = self._verify_future
@@ -297,6 +332,7 @@ class HierarchicalController:
         self._verify_request = None
         try:
             verdict = parse_verdict(future.result())
+            self._verify_errors = 0
             # A late response from a previous phase must never alter the new phase.
             if request["phase"] != self.index or request["generation"] != self.generation:
                 with self._event_lock:
@@ -315,7 +351,12 @@ class HierarchicalController:
                         ("Failure: " if failed else "Phase timeout: ") + verdict["evidence"],
                     )
         except Exception as exc:
-            self._abort(exc, step)
+            # A failed observation is not evidence of phase success/failure; retry once.
+            self.success_streak = 0
+            self._verify_errors += 1
+            self.events.append({"event": "verify_error", "step": step, "error": str(exc)})
+            if self._verify_errors >= 2:
+                self._abort(exc, step)
 
     def observe(self, obs, step, at_chunk_boundary=False):
         """Poll/schedule verification without blocking action-chunk execution.
@@ -326,7 +367,7 @@ class HierarchicalController:
         the robot. The VLA is still queried only when its cached chunk is empty.
         """
         if self.stopped:
-            return False
+            return self.enter_fallback(step, self.error or "plan_finished") if at_chunk_boundary else False
         if self._plan_future is not None:
             if not at_chunk_boundary or not self._plan_future.done():
                 return False
@@ -336,10 +377,10 @@ class HierarchicalController:
                 return True
             except Exception as exc:
                 self._abort(exc, step)
-                return False
+                return self.enter_fallback(step, self.error)
         self._poll_verifier(obs, step)
         if self.stopped:
-            return False
+            return self.enter_fallback(step, self.error) if at_chunk_boundary else False
         if (at_chunk_boundary and self._pending_transition is None
                 and step - self.phase_start_step >= self.config.phase_timeout):
             self._pending_transition = ("replan", "Phase timeout: no confirmed completion")
@@ -359,8 +400,9 @@ class HierarchicalController:
                                     "generation": self.generation, "phase": self.index,
                                     "caption": self.caption})
             except Exception as exc:
-                self._abort(exc, step)
-                return False
+                # Caption is optional; keep executing this phase without stale guidance.
+                self.caption, self.caption_type = None, "none"
+                self.events.append({"event": "caption_error", "step": step, "error": str(exc)})
         if not at_chunk_boundary or step - self.last_check < self.config.check_every:
             return False
         if step - self.phase_start_step < self.config.min_phase_steps:
@@ -377,7 +419,11 @@ class HierarchicalController:
         if self.config.async_verifier:
             self._verify_future = self._executor.submit(self._call, "verify", payload, step)
         else:
-            self._verify_future = _ImmediateFuture(self._call("verify", payload, step))
+            self._verify_future = Future()
+            try:
+                self._verify_future.set_result(self._call("verify", payload, step))
+            except Exception as exc:
+                self._verify_future.set_exception(exc)
         return False
 
     def close(self):
@@ -397,23 +443,10 @@ class HierarchicalController:
         with self._event_lock:
             events = list(self.events)
             inference_seconds = self.inference_seconds
-        return {"config": asdict(self.config), "status": "error" if self.error else
+        return {"config": asdict(self.config), "status": "fallback" if self.in_fallback else "error" if self.error else
                 ("plan_finished" if self.finished else ("planning" if self._plan_future is not None else "running")), "error": self.error,
                 "task": self.task, "replans": self.replans, "events": events,
+                "fallback_reason": self.fallback_reason, "fallback_step": self.fallback_step,
+                "plan_finished": self.finished,
                 "inference_seconds": inference_seconds,
                 "note": "Visual completion is not benchmark success. Verifier runs asynchronously and transitions apply at chunk boundaries."}
-
-
-class _ImmediateFuture:
-    """Small Future-compatible wrapper used by deterministic unit tests."""
-    def __init__(self, value):
-        self._value = value
-
-    def done(self):
-        return True
-
-    def result(self):
-        return self._value
-
-    def cancel(self):
-        return False
