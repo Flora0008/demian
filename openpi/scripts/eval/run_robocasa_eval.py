@@ -678,13 +678,9 @@ def run_episode(
     # Optional online hierarchy uses observation-only planning, not task-name plans.
     if hierarchy is not None:
         hierarchy.start(obs, instruction)
-        if hierarchy.stopped:
-            # Missing planning must not consume the environment's entire action budget.
-            hierarchy.enter_fallback(0, hierarchy.error or "initial_plan_failed")
         instruction = hierarchy.instruction
         reasoning_text = hierarchy.caption
-        if hierarchy.in_fallback:
-            instructor = None
+        instructor = None  # Hierarchy exclusively owns versioned caption requests.
 
     # --- Async caption generation ---
     # Start AR model caption generation in background thread immediately after
@@ -730,6 +726,8 @@ def run_episode(
         subtitle_lines.append("")
 
     success = False
+    success_wall_seconds = None
+    success_step = None
     subtask_successes: list[bool] = []
     action_log: list[list[float]] = []
     generated_texts: list[str] = []
@@ -770,7 +768,11 @@ def run_episode(
             _line_counts.append(_variant_line_count(t, r))
     fixed_bar_lines = max(_line_counts) + 1  # +1 for safety padding
 
+    step = -1
     for step in range(max_steps):
+        if hierarchy is not None and hierarchy.stopped:
+            step -= 1  # No action was executed in this iteration.
+            break
         if hierarchy is not None and instructor is None:
             active_caption = hierarchy.caption
             subtitle_lines[1] = f"Caption: {active_caption or ''}"
@@ -861,6 +863,9 @@ def run_episode(
             step_diagnostics.append(step_diag)
 
         if info.get("success", False):
+            if not success:
+                success_wall_seconds = time.monotonic() - episode_start_time
+                success_step = step + 1
             success = True
             done = True
 
@@ -938,23 +943,11 @@ def run_episode(
                 instruction = hierarchy.instruction
                 # A caption belongs to one phase; clear it until this phase's result is ready.
                 active_caption = None
-                if hierarchy.in_fallback:
-                    # An in-flight legacy caption also belongs to the abandoned phase.
-                    instructor = None
-                    pending_caption = pending_caption_phase = None
-                if instructor is None:
-                    active_caption = hierarchy.caption
-                if instructor is not None and not hierarchy.in_fallback:
-                    pending_caption = None
-                    pending_caption_phase = hierarchy.index
-                    caption_switch_step = None
-                    instructor.start_generation(obs, instruction)
-                    print(f"  [async-caption] Started phase {hierarchy.index} generation at step {step + 1}")
-                    logging.info("[async-caption] Started phase %d generation at step %d", hierarchy.index, step + 1)
+                active_caption = hierarchy.caption
                 client.actions_from_chunk_completed = client.open_loop_horizon
                 subtitle_lines = [f"Task: {instruction}", f"Caption: {active_caption or ''}"]
-            # Only the environment or max_steps ends a rollout; visual completion
-            # and hierarchy errors hand control back to the full task instead.
+            if hierarchy.stopped:
+                done = True
         if hierarchy is not None and _truncated:
             done = True
 
@@ -962,10 +955,19 @@ def run_episode(
             break
 
     result = {"success": success, "steps": step + 1, "subtask_successes": subtask_successes, "video": video, "action_log": action_log, "instruction": instruction}
+    result.update(timing_protocol="episode_start_before_reset_v1", max_steps=max_steps,
+                  episode_wall_seconds=time.monotonic() - episode_start_time,
+                  success_wall_seconds=success_wall_seconds, success_step=success_step,
+                  termination_reason=("environment_success" if success else
+                      hierarchy.error if hierarchy is not None and hierarchy.error else
+                      "environment_terminated" if done else "max_steps_exhausted"))
     if hierarchy is not None:
+        hierarchy.events.append({"event": "episode_end", "step": step + 1,
+                                "success": success, "reason": result["termination_reason"],
+                                "success_wall_seconds": success_wall_seconds,
+                                "episode_wall_seconds": result["episode_wall_seconds"]})
         result["hierarchy"] = hierarchy.summary()
         hierarchy.close()
-        result["episode_wall_seconds"] = time.monotonic() - episode_start_time
     if generated_texts:
         result["generated_texts"] = generated_texts
     if state_log:
@@ -1005,6 +1007,10 @@ def run_episode_dynamic(
     Returns the same result dict as run_episode, plus:
       active_instructions (list[str]) -- instruction used at each step
     """
+    import time
+    episode_start_time = time.monotonic()
+    success_wall_seconds = None
+    success_step = None
     obs, _info = env.reset()
     client.reset()
 
@@ -1042,6 +1048,8 @@ def run_episode_dynamic(
         obs, _reward, done, _truncated, info = env.step(ret["action_dict"])
 
         if info.get("success", False):
+            success_wall_seconds = time.monotonic() - episode_start_time
+            success_step = step + 1
             success = True
             done = True
 
@@ -1053,6 +1061,12 @@ def run_episode_dynamic(
 
     return {
         "success": success,
+        "success_wall_seconds": success_wall_seconds,
+        "success_step": success_step,
+        "episode_wall_seconds": time.monotonic() - episode_start_time,
+        "timing_protocol": "episode_start_before_reset_v1",
+        "max_steps": max_steps,
+        "termination_reason": "environment_success" if success else "environment_terminated" if done else "max_steps_exhausted",
         "steps": step + 1,
         "subtask_successes": subtask_successes,
         "video": video,
@@ -1212,10 +1226,8 @@ class Args:
     hierarchy_skills_file: Optional[str] = None
     """Optional JSON list of supported skill names; shared across tasks, not a phase plan."""
     hierarchy_check_every: int = 16
-    hierarchy_max_phases: int = 5
     hierarchy_confirmations: int = 2
     hierarchy_confidence: float = 0.85
-    hierarchy_phase_timeout: int = 240
     hierarchy_max_replans: int = 2
 
 
@@ -1333,9 +1345,8 @@ def main(args: Args):
             ):
                 raise ValueError("Skills file must be a nonempty JSON list of skill names")
         hierarchy_config = HierarchyConfig(check_every=args.hierarchy_check_every,
-            max_phases=args.hierarchy_max_phases,
             confirmations=args.hierarchy_confirmations, confidence_threshold=args.hierarchy_confidence,
-            phase_timeout=args.hierarchy_phase_timeout, max_replans=args.hierarchy_max_replans,
+            max_replans=args.hierarchy_max_replans,
             caption_mode=args.hierarchy_caption_mode)
     # --- Novel vocabulary override mode ---
     novel_tasks: list[dict] | None = None
@@ -1353,6 +1364,18 @@ def main(args: Args):
     out_dir = Path(args.results_dir) / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "args.json").write_text(json.dumps(asdict(args), indent=2))
+    import platform
+    import subprocess
+    try:
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent,
+                                           stderr=subprocess.DEVNULL, text=True).strip()
+        dirty = bool(subprocess.check_output(["git", "diff", "--name-only", "HEAD"],
+                                            cwd=Path(__file__).parent, text=True).strip())
+    except (OSError, subprocess.CalledProcessError):
+        revision, dirty = "unknown", None
+    run_metadata = {"code_revision": revision, "tracked_changes": dirty,
+                    "hostname": platform.node(), "python": platform.python_version()}
+    (out_dir / "run_metadata.json").write_text(json.dumps(run_metadata, indent=2))
 
     # Load dynamic instructions if provided
     dynamic_instructions: dict[str, dict] = {}
@@ -1616,8 +1639,18 @@ def main(args: Args):
                     hierarchy=HierarchicalController(
                         HTTPBackend(args.hierarchy_url, args.hierarchy_caption_url),
                         hierarchy_config, skills=hierarchy_skills,
+                        trace_dir=task_dir / f"episode_{ep:04d}_hierarchy",
+                        metadata={"task": task_name, "episode": ep, "seed": ep_seed,
+                                  "args": asdict(args), "run": run_metadata},
                     ) if args.hierarchy_url else None,
                 )
+            # Dynamic/reset-from-state paths do not consume ep_seed; do not fabricate a pairing key.
+            result.update(task=task_name, episode=ep,
+                          seed=ep_seed if not dyn and init_state is None else None)
+            # Persist each episode independently; a later process/container exit must not
+            # discard earlier episodes while waiting for the task-level aggregate.
+            (task_dir / f"episode_{ep:04d}.json").write_text(
+                json.dumps({k: v for k, v in result.items() if k != "video"}, indent=2))
             if result["success"]:
                 successes += 1
 

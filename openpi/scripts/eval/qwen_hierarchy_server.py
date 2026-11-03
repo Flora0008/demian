@@ -6,11 +6,14 @@ checkpoint. Outputs are validated data, never executable code.
 import argparse
 import json
 import logging
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+import time
+from hierarchy_trace import EventLog
 
 import torch
 from qwen_instructor_server import CaptionModel, decode_images
-from hierarchical_controller import MAX_PHASES, parse_object, parse_plan, parse_verdict
+from hierarchical_controller import parse_object, parse_plan, parse_verdict
 
 
 CAPTION_TYPE_DESCRIPTIONS = """The five caption choices use the DeMiAn caption taxonomy:
@@ -22,19 +25,18 @@ CAPTION_TYPE_DESCRIPTIONS = """The five caption choices use the DeMiAn caption t
 """
 
 
-def plan_system(max_phases):
+def plan_system():
     return f"""You plan short executable subtasks for a robot controlled by a language-conditioned VLA.
 Observe the current camera images. Use the complete user task, prior outcomes and
 feedback to plan only the REMAINING work. One phase is a skill-sized instruction
 (e.g. place an object at a destination), not individual motor commands. Preserve
 task constraints and ordering dependencies. Do not invent unavailable objects or
 robot capabilities. If a skills list is supplied, each skill must match it exactly;
-it describes supported skills, not a task-specific plan. If infeasible, return an
-empty phases list (validation will fail and the controller will fall back to the full task).
+it describes supported skills, not a task-specific plan. If no reliable remaining plan can be generated, return {{"error": "unplannable", "reason": "observable reason"}}.
 Output ONLY a JSON object: {{"phases": [{{"skill": "...", "instruction": "...",
 "success_criteria": "observable completed outcome, including release when needed",
 "caption_type": "current_action", "caption": "short grounded action/scene guidance"}}]}}.
-Return 1 to {max_phases} phases when feasible. Instructions are English and at most 300 characters.
+Return a complete non-empty list of phases when feasible. There is no fixed phase-count cap. Instructions are English and at most 300 characters.
 Captions are at most 400 characters; success_criteria at most 600.
 {CAPTION_TYPE_DESCRIPTIONS}
 Use caption_type none and an empty caption when no reliable extra information is available.
@@ -60,46 +62,36 @@ class InvalidModelOutput(ValueError):
 
 
 class HierarchyModel(CaptionModel):
-    def __init__(self, model_path, device, max_new_tokens, max_phases=MAX_PHASES):
+    def __init__(self, model_path, device, max_new_tokens):
         super().__init__(model_path, device, max_new_tokens)
-        self.max_phases = max_phases
 
     @torch.no_grad()
     def structured(self, images, payload, operation):
-        requested_max = payload.get("max_phases", self.max_phases)
-        if not isinstance(requested_max, int) or not 1 <= requested_max <= self.max_phases:
-            raise ValueError(f"max_phases must be an integer in [1, {self.max_phases}]")
-        system = plan_system(requested_max) if operation == "plan" else VERIFY_SYSTEM
+        system = plan_system() if operation == "plan" else VERIFY_SYSTEM
         if operation == "plan" and payload.get("caption_mode") != "planner":
             system += (
                 " The controller uses a separate caption source. Set caption_type to none "
                 "and caption to an empty string for every phase."
             )
         content = [{"type": "image", "image": im} for im in images]
-        content.append({"type": "text", "text": json.dumps(payload, ensure_ascii=False)})
+        model_payload = {key: value for key, value in payload.items()
+                         if key not in {"request_id", "generation", "session_id", "deadline_unix"}}
+        content.append({"type": "text", "text": json.dumps(model_payload, ensure_ascii=False)})
         messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
-        # Repair one invalid plan in the same background request; never truncate required actions.
-        attempts = 2 if operation == "plan" else 1
-        for attempt in range(attempts):
-            generated = self._generate(images, messages)
-            try:
-                value = parse_object(generated)
-                if operation == "plan":
-                    return {"phases": parse_plan(value, payload.get("skills", []), requested_max)}
-                return parse_verdict(value)
-            except ValueError as exc:
-                if attempt + 1 == attempts:
-                    raise InvalidModelOutput(
-                        f"Invalid {operation} output after {attempts} attempts: {exc}"
-                    ) from exc
-                messages.extend([
-                    {"role": "assistant", "content": generated},
-                    {"role": "user", "content": (
-                        f"Validation failed: {exc}. Return a complete valid plan of 1 to "
-                        f"{requested_max} phases. Preserve every necessary remaining action; "
-                        "merge related actions if needed, do not truncate the plan. JSON only."
-                    )},
-                ])
+        generated = self._generate(images, messages)
+        try:
+            value = parse_object(generated)
+            if operation == "plan":
+                if value.get("error") == "unplannable":
+                    raise ValueError("Planner could not plan reliably: " + str(value.get("reason", "")))
+                result = {"phases": parse_plan(value, payload.get("skills", []))}
+            else:
+                result = parse_verdict(value)
+            return {**result, "raw_output": generated}
+        except ValueError as exc:
+            # Preserve invalid output too. Retry belongs to the client: two attempts total.
+            raise InvalidModelOutput(json.dumps({"validation_error": str(exc),
+                                                 "raw_output": generated})) from exc
 
     def _generate(self, images, messages):
         text = self.processor.apply_chat_template(messages, tokenize=False,
@@ -111,15 +103,27 @@ class HierarchyModel(CaptionModel):
                                                skip_special_tokens=True).strip()
 
 
-def make_handler(model):
+def make_handler(model, trace=None):
+    # Concurrent HTTP receipt does not mean concurrent GPU generation. One model owner
+    # avoids extra VRAM; deadline checks discard requests that expired while queued.
+    inference_lock = threading.Lock()
+    receipt_lock = threading.Lock()
+    latest_generation = {}
+    completed = {}  # Last completed request per session/operation, not every monitor frame.
     class Handler(BaseHTTPRequestHandler):
         def respond(self, status, value):
+            if trace is not None:
+                trace.append({"event": "http_response", "status": status, "response": value,
+                              "request_id": getattr(self, "request_id", None)})
             data = json.dumps(value).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                logging.warning("Client disconnected; response retained in service trace")
 
         def do_GET(self):
             self.respond(200 if self.path == "/healthz" else 404, {"service": "hierarchy"})
@@ -136,6 +140,14 @@ def make_handler(model):
                 body = json.loads(self.rfile.read(size))
                 if not isinstance(body, dict):
                     raise ValueError("Expected a JSON request object")
+                self.request_id = body.get("request_id")
+                if trace is not None:
+                    trace.append({"event": "http_request", "operation": operation, "payload": body})
+                session, generation = body.get("session_id", "legacy"), body.get("generation", 0)
+                if not isinstance(session, str) or type(generation) is not int:
+                    raise ValueError("Invalid request identity")
+                with receipt_lock:
+                    latest_generation[session] = max(generation, latest_generation.get(session, generation))
                 images = body.pop("images", None)
                 start = body.pop("start_images", [])
                 if not isinstance(images, list) or len(images) != 3:
@@ -147,7 +159,34 @@ def make_handler(model):
                 self.respond(400, {"error": str(exc), "error_type": "invalid_request"})
                 return
             try:
-                self.respond(200, model.structured(decoded, body, operation))
+                received = time.time()
+                with inference_lock:
+                    started = time.time()
+                    with receipt_lock:
+                        stale = generation < latest_generation[session]
+                    if stale or body.get("deadline_unix", float("inf")) < started:
+                        self.respond(408, {"error": "stale_or_expired_before_inference", "request_id": body.get("request_id"),
+                                           "queue_seconds": started - received})
+                        return
+                    cache_key = (session, operation)
+                    cached = completed.get(cache_key)
+                    if self.request_id and cached and cached[0] == self.request_id:
+                        status, result = cached[1], cached[2]
+                    else:
+                        try:
+                            result = model.structured(decoded, body, operation)
+                            status = 200
+                        except InvalidModelOutput as exc:
+                            status, result = 422, {"error": str(exc), "error_type": "invalid_model_output"}
+                        except Exception as exc:
+                            logging.exception("Hierarchy inference failed")
+                            status, result = 500, {"error": str(exc), "error_type": "inference_error"}
+                        result["service_timing"] = {"received_unix": received, "started_unix": started,
+                                                    "queue_seconds": started - received,
+                                                    "inference_seconds": time.time() - started}
+                        if self.request_id:
+                            completed[cache_key] = (self.request_id, status, result)
+                self.respond(status, result)
             except InvalidModelOutput as exc:
                 logging.exception("Hierarchy output validation failed")
                 self.respond(422, {"error": str(exc), "error_type": "invalid_model_output"})
@@ -167,11 +206,10 @@ def main():
     parser.add_argument("--port", type=int, default=8002)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--max-new-tokens", type=int, default=1024)
-    parser.add_argument("--max-phases", type=int, default=MAX_PHASES,
-                        choices=range(1, MAX_PHASES + 1))
+    parser.add_argument("--trace-dir", default="hierarchy-service-" + time.strftime("%Y%m%d-%H%M%S"))
     args = parser.parse_args()
-    model = HierarchyModel(args.model_path, args.device, args.max_new_tokens, args.max_phases)
-    server = HTTPServer((args.bind, args.port), make_handler(model))
+    model = HierarchyModel(args.model_path, args.device, args.max_new_tokens)
+    server = ThreadingHTTPServer((args.bind, args.port), make_handler(model, EventLog(args.trace_dir, vars(args), retain=False)))
     logging.info("Hierarchy server on %s:%s", args.bind, args.port)
     server.serve_forever()
 
