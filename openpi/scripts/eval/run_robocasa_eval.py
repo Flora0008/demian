@@ -398,37 +398,6 @@ def _observation_diagnostics(obs: dict) -> dict:
     }
 
 
-def _capture_blackout_snapshot(directory: Path, step: int, reference_step: int,
-                               reference: dict, obs: dict, black_cameras: list[str], env) -> None:
-    """Keep exact camera arrays and GPU/render context for the first blackout in a probe episode."""
-    import subprocess
-
-    directory.mkdir(parents=True, exist_ok=False)
-    arrays = {f"reference_{key}": np.asarray(value) for key, value in reference.items()}
-    arrays.update({f"blackout_{key}": np.asarray(obs[key]) for key in reference})
-    np.savez_compressed(directory / "camera_frames.npz", **arrays)
-    sim = getattr(getattr(env, "unwrapped", env), "sim", None)
-    context = {
-        "step": step, "reference_step": reference_step,
-        "black_cameras": black_cameras,
-        "render_context_type": type(getattr(sim, "render_context_offscreen", None)).__name__,
-        "MUJOCO_GL": _os.environ.get("MUJOCO_GL"),
-        "PYOPENGL_PLATFORM": _os.environ.get("PYOPENGL_PLATFORM"),
-        "NVIDIA_DRIVER_CAPABILITIES": _os.environ.get("NVIDIA_DRIVER_CAPABILITIES"),
-    }
-    (directory / "context.json").write_text(json.dumps(context, indent=2))
-    try:
-        gpu = subprocess.run(["nvidia-smi", "-q"], capture_output=True, text=True, timeout=10,
-                             check=False)
-        gpu_text = f"exit={gpu.returncode}\n{gpu.stdout}\n{gpu.stderr}"
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        gpu_text = f"GPU diagnostic unavailable: {type(exc).__name__}: {exc}"
-    (directory / "gpu_diagnostics.txt").write_text(gpu_text)
-    # Native renderer warnings, if emitted on stderr, are captured by the runner log.
-    logging.error("[camera-blackout] step=%d cameras=%s snapshot=%s render_context=%s",
-                  step, black_cameras, directory, context["render_context_type"])
-
-
 def _step_info_diagnostics(info: dict) -> dict:
     out = {
         "keys": sorted(str(k) for k in info.keys()),
@@ -652,7 +621,6 @@ def run_episode(
     subgoal_switch_buffer: int = 20,
     record_video: bool = True,
     save_step_diagnostics: bool = False,
-    blackout_diagnostics_dir: Path | None = None,
     hierarchy=None,
 ) -> dict:
     """
@@ -772,12 +740,6 @@ def run_episode(
     pending_switch_step: int | None = None  # step when current phase's trigger first fired (latched)
 
     raw_env = env.unwrapped if (subgoal_fn is not None or subgoal_plan is not None) else None
-    camera_keys = ("video.robot0_agentview_left", "video.robot0_agentview_right",
-                   "video.robot0_eye_in_hand")
-    reference_step = 0
-    reference_images = ({key: np.asarray(obs[key]).copy() for key in camera_keys}
-                        if blackout_diagnostics_dir is not None else None)
-    blackout_captured = False
 
     # Subgoal-driven mode: override instruction / reasoning from plan[0].
     if subgoal_plan is not None and len(subgoal_plan) > 0:
@@ -891,19 +853,6 @@ def run_episode(
         _env_step_t0 = time.monotonic()
         obs, _reward, done, _truncated, info = env.step(ret["action_dict"])
         _env_step_wall_time_sec = time.monotonic() - _env_step_t0
-        if blackout_diagnostics_dir is not None and not blackout_captured:
-            black = [key for key in camera_keys
-                     if float(np.asarray(obs[key]).mean()) < 5 and float(np.asarray(obs[key]).std()) < 5]
-            if black:
-                blackout_captured = True
-                try:
-                    _capture_blackout_snapshot(blackout_diagnostics_dir, step + 1, reference_step,
-                                               reference_images, obs, black, env)
-                except Exception:
-                    logging.exception("[camera-blackout] failed to save diagnostic snapshot at step %d", step + 1)
-            elif step % 16 == 0:
-                reference_step = step + 1
-                reference_images = {key: np.asarray(obs[key]).copy() for key in camera_keys}
         if step_diag is not None:
             step_diag["env_step_wall_time_sec"] = float(_env_step_wall_time_sec)
             step_diag["reward"] = float(_reward)
@@ -1173,8 +1122,6 @@ class Args:
     """Record lightweight per-step observation/action diagnostics in results JSON.
     This stores proprioception vectors, camera image statistics, raw/gym actions,
     rewards, and done/info flags, but not raw image frames."""
-    capture_blackout_diagnostics: bool = False
-    """For small reproductions only: save first raw blackout frames, render context and nvidia-smi."""
 
     # Dynamic instructions
     dynamic_instructions_file: Optional[str] = None
@@ -1689,8 +1636,6 @@ def main(args: Args):
                     subgoal_switch_buffer=args.subgoal_switch_buffer,
                     record_video=args.save_video,
                     save_step_diagnostics=args.save_step_diagnostics,
-                    blackout_diagnostics_dir=(task_dir / f"episode_{ep:04d}_blackout"
-                                              if args.capture_blackout_diagnostics else None),
                     hierarchy=HierarchicalController(
                         HTTPBackend(args.hierarchy_url, args.hierarchy_caption_url),
                         hierarchy_config, skills=hierarchy_skills,
