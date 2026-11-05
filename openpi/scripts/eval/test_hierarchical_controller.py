@@ -357,6 +357,7 @@ class ControllerTests(unittest.TestCase):
         ctrl.close()
 
     def test_unknown_skill_is_rejected(self):
+        self.assertEqual(parse_plan({"phases": [phase("one")]}, skills=[])[0]["skill"], "place")
         with self.assertRaises(ValueError):
             parse_plan({"phases": [phase("one")]}, skills=["open"])
 
@@ -661,6 +662,20 @@ class ServerPromptTests(unittest.TestCase):
             model.structured([], {}, "verify")
         self.assertEqual(len(self.messages), 1)
 
+    def test_server_labels_each_camera_view_for_planning_and_verification(self):
+        model = self.load_model_logic([json.dumps({"phases": [phase("one")]})])
+        model.structured(["left", "right", "wrist"], {"skills": []}, "plan")
+        content = self.messages[0][1]["content"]
+        self.assertEqual([item["text"] for item in content if item["type"] == "text"][:3],
+                         ["current left", "current right", "current wrist"])
+        model = self.load_model_logic([json.dumps({"status": "uncertain", "confidence": 0.8,
+                                                  "evidence": "right view occluded"})])
+        model.structured(["start-left", "start-right", "start-wrist", "left", "right", "wrist"], {}, "verify")
+        content = self.messages[0][1]["content"]
+        self.assertEqual([item["text"] for item in content if item["type"] == "text"][:6],
+                         ["phase start left", "phase start right", "phase start wrist",
+                          "current left", "current right", "current wrist"])
+
     def test_plan_prompt_formats_literal_json(self):
         path = Path(__file__).with_name("qwen_hierarchy_server.py")
         tree = ast.parse(path.read_text())
@@ -672,6 +687,9 @@ class ServerPromptTests(unittest.TestCase):
         self.assertIn("no fixed phase-count cap", prompt)
         self.assertIn("Temporary lack of visibility", prompt)
         self.assertIn("missing visual evidence alone is", prompt)
+        self.assertIn("visible in ANY view", prompt)
+        self.assertIn("missing or empty skills list", prompt)
+        self.assertIn('"view_observations"', prompt)
 
 
 if __name__ == "__main__":

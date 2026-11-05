@@ -27,19 +27,25 @@ CAPTION_TYPE_DESCRIPTIONS = """The five caption choices use the DeMiAn caption t
 
 def plan_system():
     return f"""You plan short executable subtasks for a robot controlled by a language-conditioned VLA.
-Observe the current camera images. Use the complete user task, prior outcomes and
+Inspect the labeled left, right, and wrist views independently. Briefly report what
+each view shows in view_observations. If the target is visible in ANY view, treat it
+as visible; occlusion in another view does not negate positive visual evidence.
+Use the complete user task, prior outcomes and
 feedback to plan only the REMAINING work. One phase is a skill-sized instruction
 (e.g. place an object at a destination), not individual motor commands. Preserve
 task constraints and ordering dependencies. Do not invent unavailable objects or
-robot capabilities. If a skills list is supplied, each skill must match it exactly;
-it describes supported skills, not a task-specific plan. Temporary lack of visibility
+robot capabilities. A missing or empty skills list means NO extra skill-name
+constraint, not that the robot has no capabilities. If a non-empty skills list is
+supplied, each skill must match it exactly; it describes supported skills, not a
+task-specific plan. Temporary lack of visibility
 or an inconvenient robot pose does not make the task unplannable: first add a grounded
 phase to search, move to a useful viewpoint, approach the workspace, or open an
 occluding container as appropriate. Return {{"error": "unplannable", "reason":
 "observable reason"}} only when the requested task clearly conflicts with the supplied
 skills, available objects, or robot capabilities; missing visual evidence alone is
 insufficient.
-Output ONLY a JSON object: {{"phases": [{{"skill": "...", "instruction": "...",
+Output ONLY a JSON object: {{"view_observations": {{"left": "...", "right": "...", "wrist": "..."}},
+"phases": [{{"skill": "...", "instruction": "...",
 "success_criteria": "observable completed outcome, including release when needed",
 "caption_type": "current_action", "caption": "short grounded action/scene guidance"}}]}}.
 Return a complete non-empty list of phases when feasible. There is no fixed phase-count cap. Instructions are English and at most 300 characters.
@@ -52,14 +58,19 @@ dependency or constraint; do not write long speculative explanations. Never retu
 VERIFY_SYSTEM = """You judge whether a robot's CURRENT subtask is completed using before/current images.
 You are not the planner. A caption is guidance, NOT evidence of success. The first
 three images are at phase start; the last three are the current left, right, wrist views.
-Evaluate every requirement in success_criteria using the current observations.
+Inspect all three labeled current views independently. A visible unmet condition in
+ANY view rules out success, even if another view looks complete. Evaluate every
+requirement in success_criteria using the current observations.
 Do not confuse reaching with grasping, proximity with correct placement, or holding
-an object over a receptacle with placing and releasing it. A button being approached
+an object over a receptacle with placing and releasing it. Placement requires the
+complete object footprint to be visibly supported by the target surface after release;
+overlap in one image, edge contact, hovering, or a gripper still holding it is not
+enough. If support or release cannot be verified, choose uncertain. A button being approached
 does not prove a machine was activated. If the necessary condition is occluded or
 not visually observable, choose uncertain. Use failure for visible loss of a required
 condition or an invalid plan requiring recovery, not merely unfinished movement.
 Output ONLY {"status": "ongoing|success|failure|uncertain", "confidence": 0.0,
-"evidence": "brief observable evidence and any unresolved condition"}.
+"evidence": "brief evidence from each relevant view and any unresolved condition"}.
 confidence is a heuristic score, not a calibrated probability. evidence <= 600 characters."""
 
 
@@ -79,7 +90,11 @@ class HierarchyModel(CaptionModel):
                 " The controller uses a separate caption source. Set caption_type to none "
                 "and caption to an empty string for every phase."
             )
-        content = [{"type": "image", "image": im} for im in images]
+        labels = (["phase start left", "phase start right", "phase start wrist"]
+                  if operation == "verify" else []) + ["current left", "current right", "current wrist"]
+        content = []
+        for label, im in zip(labels, images):
+            content.extend([{"type": "text", "text": label}, {"type": "image", "image": im}])
         model_payload = {key: value for key, value in payload.items()
                          if key not in {"request_id", "generation", "session_id", "deadline_unix"}}
         content.append({"type": "text", "text": json.dumps(model_payload, ensure_ascii=False)})
