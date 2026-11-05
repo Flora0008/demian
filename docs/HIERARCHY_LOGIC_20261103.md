@@ -23,7 +23,7 @@
 初始 Planner 尚未返回时：原始任务＋无 caption，动作继续；不是失败后的 fallback。
 Planner 得到当前三个视角、原始任务、全部完成/恢复历史、反馈、之前的计划和当前阶段编号。
 提示词要求仅规划剩余工作、保持依赖顺序、不发明物体或能力。
-计划各阶段包含 skill、instruction、success_criteria、caption_type、caption。
+计划各阶段仅包含 skill、instruction、success_criteria；caption 由独立 Instructor 请求产生。
 计划保留完整列表，没有最多五阶段限制。解析失败不截断执行。
 无法可靠规划时返回 unplannable 和原因；按模型输出错误处理，允许一次重试。
 
@@ -34,7 +34,7 @@ Planner 得到当前三个视角、原始任务、全部完成/恢复历史、�
 
 ## 3. Monitor 的依据和判定
 
-输入为阶段起始三个视角＋当前三个视角，原始任务、当前阶段及其 success_criteria、步数。
+输入为阶段起始三个视角＋当前三个视角、当前阶段及其 success_criteria、步数；不传完整任务或后续阶段。
 不是连续视频；不读取模拟器内部状态。caption 不能作为成功证据。
 要求区分靠近/抓住、悬在容器上方/放入并释放、接近按钮/已经启动。
 遮挡或视觉不可知用 uncertain；未完成动作不等于 failure。
@@ -54,6 +54,7 @@ failure 用于可见必要条件丢失或计划需要恢复；它仍是模型推
 
 删除两处 240 步未确认完成就重规划的路径：没有新增软/硬阶段超时。
 持续 ongoing/uncertain 可以用完整轮动作预算；这是本次明确选择，不暗中增加停滞检测。
+三个视角同时近黑时记录 observation_error，暂缓视觉判断并清除待应用的旧判断；后续动作块读取新观测，恢复时记录 observation_recovered。黑屏次数本身不终止整轮任务；整轮仍受原有 max_steps 约束。仿真渲染根因尚未定位。
 
 ## 4. 阶段预算与终止
 
@@ -110,9 +111,9 @@ HTTP 接收改为多线程，模型生成仍由一把锁串行执行，避免未
 - Planner/Monitor max_new_tokens 默认 1024，do_sample=False，use_cache=True，enable_thinking=False。
 - 模型输出不是无限长；被截断的 JSON 作为输出错误重试，不把前半份计划拿来执行。
 - instruction 最长 300 字符；success_criteria/evidence 最长 600；skill 最长 160。
-- Planner caption 最长 400；Instructor caption 最长 1200；空 Instructor caption 作为无效输出重试。
+- Instructor caption 最长 1200；空 Instructor caption 作为无效输出重试。
 - 服务请求体最多 8,000,000 字节，plan 要求三个当前图像，verify 要求另加三个起始图像。
-- 可选 skills 列表非空时必须匹配其中的 skill；caption_type 为现有五类之一。
+- 可选 skills 列表非空时必须匹配其中的 skill；Planner 不生成 caption_type。
 - 原 Instructor 服务 max_new_tokens 默认128、bfloat16、默认 cuda:1；具体部署以启动命令为准。
 - hierarchy 服务默认 cuda:0、127.0.0.1:8002；模型权重路径由 --model-path 明确指定，不由代码选择 Qwen 权重版本。
 

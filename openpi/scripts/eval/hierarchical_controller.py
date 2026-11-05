@@ -424,12 +424,17 @@ class HierarchicalController:
                 self.invalid_observations += 1
                 if self.index >= 0:
                     self.success_streak = self.failure_streak = 0
+                if self._verify_future is not None:
+                    self._verify_future.cancel()
+                    self._verify_future = self._verify_request = None
+                self._pending_transition = None
                 self.events.append({"event": "observation_error", "step": step,
                                     "reason": "all_camera_views_nearly_black",
                                     "consecutive": self.invalid_observations})
-                if self.invalid_observations >= 2:
-                    return self.terminate(step, "observation_error: all camera views remained black")
-                return False  # Next chunk boundary receives a fresh simulator observation.
+                return False  # No visual judgment until a fresh valid observation arrives.
+            if self.invalid_observations:
+                self.events.append({"event": "observation_recovered", "step": step,
+                                    "black_chunk_boundaries": self.invalid_observations})
             self.invalid_observations = 0
         if self._plan_future is not None:
             if not at_chunk_boundary or not self._plan_future.done():

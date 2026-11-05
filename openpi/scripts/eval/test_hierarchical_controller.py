@@ -90,7 +90,7 @@ class ControllerTests(unittest.TestCase):
         finally:
             ctrl.close()
 
-    def test_black_observation_recovers_or_stops_without_monitor_verdict(self):
+    def test_black_observation_defers_monitor_and_recovers_without_stopping(self):
         dark = {camera: SimpleNamespace(mean=lambda: 1.0, std=lambda: 1.0)
                 for camera in ("video.robot0_agentview_left", "video.robot0_agentview_right",
                                "video.robot0_eye_in_hand")}
@@ -100,11 +100,23 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(observe(ctrl, {"frame": 1, **dark}, 1))
         self.assertEqual(ctrl.invalid_observations, 1)
         self.assertFalse(ctrl.stopped)
-        self.assertFalse(observe(ctrl, {"frame": 2}, 2))
+        for step in range(2, 10):
+            self.assertFalse(observe(ctrl, {"frame": step, **dark}, step))
+        self.assertEqual(ctrl.invalid_observations, 9)
+        self.assertFalse(ctrl.stopped)
+        self.assertEqual(len([e for e in ctrl.events if e["event"] == "verdict_applied"]), 0)
+        self.assertFalse(observe(ctrl, {"frame": 10}, 10))
         self.assertEqual(ctrl.invalid_observations, 0)
-        self.assertFalse(observe(ctrl, {"frame": 3, **dark}, 3))
-        self.assertTrue(observe(ctrl, {"frame": 4, **dark}, 4))
-        self.assertIn("observation_error", ctrl.error)
+        self.assertTrue(any(e["event"] == "observation_recovered" for e in ctrl.events))
+
+        # A verdict obtained before the blackout cannot advance a phase afterward.
+        ctrl2 = controller(Backend(verdicts=[verdict("success")]))
+        self.addCleanup(ctrl2.close)
+        ctrl2.start({"frame": 0}, "task")
+        observe(ctrl2, {"frame": 1}, 1)
+        observe(ctrl2, {"frame": 2, **dark}, 2)
+        observe(ctrl2, {"frame": 3}, 3)
+        self.assertEqual(ctrl2.index, 0)
 
     def test_verifier_error_retries_once_then_stops(self):
         calls = []
