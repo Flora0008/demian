@@ -105,6 +105,10 @@ class HierarchyModel(CaptionModel):
             if operation == "plan":
                 if value.get("error") == "unplannable":
                     raise ValueError("Planner could not plan reliably: " + str(value.get("reason", "")))
+                if payload.get("caption_mode") != "planner" and isinstance(value.get("phases"), list):
+                    # Instructor owns captions; Qwen's unused caption fields must not reject a valid plan.
+                    value["phases"] = [{**phase, "caption_type": "none", "caption": ""}
+                                       if isinstance(phase, dict) else phase for phase in value["phases"]]
                 result = {"phases": parse_plan(value, payload.get("skills", []))}
             else:
                 result = parse_verdict(value)

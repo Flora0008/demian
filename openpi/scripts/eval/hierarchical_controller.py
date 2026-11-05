@@ -37,8 +37,12 @@ def parse_object(text):
 
 
 def short_text(value, name, maximum=600, allow_empty=False):
-    if not isinstance(value, str) or len(value) > maximum or (not value.strip() and not allow_empty):
+    if not isinstance(value, str):
+        raise ValueError(f"Invalid {name}: expected text")
+    if len(value) > maximum:
         raise ValueError(f"Invalid {name}: expected text of at most {maximum} characters")
+    if not value.strip() and not allow_empty:
+        raise ValueError(f"Invalid {name}: {name} cannot be empty")
     return value.strip()
 
 

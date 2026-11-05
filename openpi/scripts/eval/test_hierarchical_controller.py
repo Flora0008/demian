@@ -645,6 +645,17 @@ class ServerPromptTests(unittest.TestCase):
         self.assertEqual(result["raw_output"], raw)
         self.assertEqual(len(self.messages), 1)
 
+    def test_instructor_mode_ignores_planner_caption_fields(self):
+        bad_caption = phase("pick mug")
+        bad_caption.update(caption_type="current_action", caption="")
+        model = self.load_model_logic([json.dumps({"phases": [bad_caption]})])
+        result = model.structured([], {"caption_mode": "instructor"}, "plan")
+        self.assertEqual(result["phases"][0]["caption_type"], "none")
+        self.assertEqual(result["phases"][0]["caption"], "")
+        model = self.load_model_logic([json.dumps({"phases": [bad_caption]})])
+        with self.assertRaisesRegex(ValueError, "caption cannot be empty"):
+            model.structured([], {"caption_mode": "planner"}, "plan")
+
     def test_invalid_output_preserved_without_hidden_server_retry(self):
         for raw in ('{"phases": []}', '{"phases": "wrong"}', 'not JSON'):
             model = self.load_model_logic([raw])
