@@ -670,6 +670,8 @@ class ServerPromptTests(unittest.TestCase):
         prompt = namespace["plan_system"]()
         self.assertIn('"phases": [{"skill":', prompt)
         self.assertIn("no fixed phase-count cap", prompt)
+        self.assertIn("Temporary lack of visibility", prompt)
+        self.assertIn("missing visual evidence alone is", prompt)
 
 
 if __name__ == "__main__":

@@ -32,7 +32,13 @@ feedback to plan only the REMAINING work. One phase is a skill-sized instruction
 (e.g. place an object at a destination), not individual motor commands. Preserve
 task constraints and ordering dependencies. Do not invent unavailable objects or
 robot capabilities. If a skills list is supplied, each skill must match it exactly;
-it describes supported skills, not a task-specific plan. If no reliable remaining plan can be generated, return {{"error": "unplannable", "reason": "observable reason"}}.
+it describes supported skills, not a task-specific plan. Temporary lack of visibility
+or an inconvenient robot pose does not make the task unplannable: first add a grounded
+phase to search, move to a useful viewpoint, approach the workspace, or open an
+occluding container as appropriate. Return {{"error": "unplannable", "reason":
+"observable reason"}} only when the requested task clearly conflicts with the supplied
+skills, available objects, or robot capabilities; missing visual evidence alone is
+insufficient.
 Output ONLY a JSON object: {{"phases": [{{"skill": "...", "instruction": "...",
 "success_criteria": "observable completed outcome, including release when needed",
 "caption_type": "current_action", "caption": "short grounded action/scene guidance"}}]}}.
