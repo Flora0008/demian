@@ -90,7 +90,7 @@ caption 空文本、非法文本、服务或网络错误均记录，并用最新
 重试在后续可用 chunk 边界发起，同时最多一个当前有效请求；没有次数上限、没有额外时间阈值。
 成功得到有效 caption 后停止重试；新阶段、重规划或 episode 结束时停止旧请求的重试。
 已开始的底层 GPU/HTTP 调用不能保证立即停止，但其返回不得注入新阶段。
-caption_mode=planner 使用 Planner 提供的 caption；none 始终无 caption，供消融使用。
+Planner 只生成阶段指令和成功条件，不生成或校验 caption。caption_mode=instructor 为每个阶段另行请求 Instructor；none 始终无 caption，供消融使用。
 
 ## 6. 请求重试、排队、限制和错误
 

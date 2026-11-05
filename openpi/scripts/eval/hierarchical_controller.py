@@ -19,7 +19,6 @@ import uuid
 from hierarchy_trace import EventLog
 
 
-CAPTION_TYPES = {"current_action", "environment-simple", "agent_arm_state", "reasoning-short", "none"}
 CAMERAS = ("video.robot0_agentview_left", "video.robot0_agentview_right", "video.robot0_eye_in_hand")
 
 
@@ -57,19 +56,11 @@ def parse_plan(value, skills=()):
         skill = short_text(phase.get("skill"), "skill", 160)
         if skills and skill not in skills:
             raise ValueError(f"Unsupported skill: {skill}")
-        kind = phase.get("caption_type")
-        if not isinstance(kind, str) or kind not in CAPTION_TYPES:
-            raise ValueError(f"Unsupported caption_type: {kind}")
-        caption = short_text(phase.get("caption"), "caption", 400, allow_empty=kind == "none")
-        if kind == "none" and caption:
-            raise ValueError("caption_type=none requires an empty caption")
         result.append({
             "id": index,
             "skill": skill,
             "instruction": short_text(phase.get("instruction"), "instruction", 300),
             "success_criteria": short_text(phase.get("success_criteria"), "success_criteria"),
-            "caption_type": kind,
-            "caption": caption,
         })
     return result
 
@@ -137,7 +128,7 @@ class HierarchyConfig:
     confirmations: int = 2
     confidence_threshold: float = 0.85
     max_replans: int = 2
-    caption_mode: str = "planner"  # none | planner | instructor
+    caption_mode: str = "none"  # none | instructor; planner never generates captions
     async_verifier: bool = True
     async_planner: bool = True
 
@@ -148,7 +139,7 @@ class HierarchyConfig:
             raise ValueError("Invalid replan budget / phase timeout")
         if not 0 <= self.confidence_threshold <= 1:
             raise ValueError("Invalid confidence threshold")
-        if self.caption_mode not in {"none", "planner", "instructor"}:
+        if self.caption_mode not in {"none", "instructor"}:
             raise ValueError("Invalid caption mode")
 
 
@@ -179,6 +170,14 @@ class HierarchicalController:
         self._pending_transition = None
         self._closed = False
         self.caption = None
+        self.invalid_observations = 0
+
+    @staticmethod
+    def _black_observation(obs):
+        # shortcut: 5/5 is a heuristic for the observed all-camera blackout; calibrate on other renderers.
+        return all(camera in obs and hasattr(obs[camera], "mean")
+                   and float(obs[camera].mean()) < 5 and float(obs[camera].std()) < 5
+                   for camera in CAMERAS)
 
     def _images(self, obs):
         images = self.encoder(obs)
@@ -295,7 +294,6 @@ class HierarchicalController:
         payload = {
             "task": self.task, "images": self._images(obs), "skills": self.skills,
             "history": self.history, "feedback": feedback,
-            "caption_mode": self.config.caption_mode,
             "previous_plan": getattr(self, "phases", []),
             "current_phase": self.index,
         }
@@ -324,10 +322,7 @@ class HierarchicalController:
         self.failure_streak = 0
         self.instruction = self.phase["instruction"]
         self.caption, self.caption_type = None, "none"
-        if self.config.caption_mode == "planner":
-            self.caption = self.phase["caption"] or None
-            self.caption_type = self.phase["caption_type"]
-        elif self.config.caption_mode == "instructor":
+        if self.config.caption_mode == "instructor":
             self._caption_future = self._submit(self._caption_executor, "caption", {"images": self.phase_start_images,
                                         "task_description": self.instruction}, step)
         self.events.append({"event": "phase_enter", "step": step, "generation": self.generation,
@@ -424,6 +419,18 @@ class HierarchicalController:
         """
         if self.stopped:
             return False
+        if at_chunk_boundary:
+            if self._black_observation(obs):
+                self.invalid_observations += 1
+                if self.index >= 0:
+                    self.success_streak = self.failure_streak = 0
+                self.events.append({"event": "observation_error", "step": step,
+                                    "reason": "all_camera_views_nearly_black",
+                                    "consecutive": self.invalid_observations})
+                if self.invalid_observations >= 2:
+                    return self.terminate(step, "observation_error: all camera views remained black")
+                return False  # Next chunk boundary receives a fresh simulator observation.
+            self.invalid_observations = 0
         if self._plan_future is not None:
             if not at_chunk_boundary or not self._plan_future.done():
                 return False
@@ -466,7 +473,7 @@ class HierarchicalController:
             return False
         self.last_check = step
         payload = {
-            "task": self.task, "phase": self.phase,
+            "phase": self.phase,
             "start_step": self.phase_start_step, "current_step": step,
             "start_images": self.phase_start_images, "images": self._images(obs),
         }

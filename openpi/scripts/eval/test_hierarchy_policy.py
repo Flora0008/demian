@@ -19,7 +19,7 @@ class PolicyTests(unittest.TestCase):
         observe(ctrl, {"frame": 1}, 1)
         observe(ctrl, {"frame": 2}, 2)
         self.assertEqual(ctrl.replans, 0)
-        self.assertEqual(ctrl.caption, "caption for one")
+        self.assertIsNone(ctrl.caption)
         observe(ctrl, {"frame": 3}, 3)
         self.assertEqual(ctrl.replans, 1)  # Installing repair does NOT reset budget.
         for step in (4, 5, 6):
@@ -110,7 +110,7 @@ class PolicyTests(unittest.TestCase):
         from hierarchical_controller import parse_plan, parse_verdict
         with self.assertRaises(ValueError):
             parse_verdict({"status": [], "confidence": .9, "evidence": "bad enum"})
-        malformed = {**phase("one"), "caption_type": []}
+        malformed = {**phase("one"), "instruction": []}
         with self.assertRaises(ValueError):
             parse_plan({"phases": [malformed]})
 

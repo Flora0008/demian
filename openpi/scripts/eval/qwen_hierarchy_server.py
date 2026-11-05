@@ -16,17 +16,8 @@ from qwen_instructor_server import CaptionModel, decode_images
 from hierarchical_controller import parse_object, parse_plan, parse_verdict
 
 
-CAPTION_TYPE_DESCRIPTIONS = """The five caption choices use the DeMiAn caption taxonomy:
-- current_action: physical-motion caption describing the immediate robot motion.
-- environment-simple: simple scene caption describing the relevant objects and environment state.
-- agent_arm_state: arm-pose caption describing the robot arm, gripper, and end-effector state.
-- reasoning-short: short reasoning caption connecting the current observation, constraint, and next action.
-- none: no auxiliary caption is reliable; return an empty caption.
-"""
-
-
 def plan_system():
-    return f"""You plan short executable subtasks for a robot controlled by a language-conditioned VLA.
+    return """You plan short executable subtasks for a robot controlled by a language-conditioned VLA.
 Inspect the labeled left, right, and wrist views independently. Briefly report what
 each view shows in view_observations. If the target is visible in ANY view, treat it
 as visible; occlusion in another view does not negate positive visual evidence.
@@ -40,24 +31,25 @@ supplied, each skill must match it exactly; it describes supported skills, not a
 task-specific plan. Temporary lack of visibility
 or an inconvenient robot pose does not make the task unplannable: first add a grounded
 phase to search, move to a useful viewpoint, approach the workspace, or open an
-occluding container as appropriate. Return {{"error": "unplannable", "reason":
-"observable reason"}} only when the requested task clearly conflicts with the supplied
+occluding container as appropriate. Return {"error": "unplannable", "reason":
+"observable reason"} only when the requested task clearly conflicts with the supplied
 skills, available objects, or robot capabilities; missing visual evidence alone is
 insufficient.
-Output ONLY a JSON object: {{"view_observations": {{"left": "...", "right": "...", "wrist": "..."}},
-"phases": [{{"skill": "...", "instruction": "...",
-"success_criteria": "observable completed outcome, including release when needed",
-"caption_type": "current_action", "caption": "short grounded action/scene guidance"}}]}}.
+Output ONLY a JSON object: {"view_observations": {"left": "...", "right": "...", "wrist": "..."},
+"phases": [{"skill": "...", "instruction": "...",
+"success_criteria": "observable completed outcome, including release when needed"}]}.
 Return a complete non-empty list of phases when feasible. There is no fixed phase-count cap. Instructions are English and at most 300 characters.
-Captions are at most 400 characters; success_criteria at most 600.
-{CAPTION_TYPE_DESCRIPTIONS}
-Use caption_type none and an empty caption when no reliable extra information is available.
+Success_criteria is at most 600 characters. Do not generate captions; a separate Instructor handles them.
 Do not assume future actions already happened. Reasoning should identify a concrete
 dependency or constraint; do not write long speculative explanations. Never return Python code."""
 
 VERIFY_SYSTEM = """You judge whether a robot's CURRENT subtask is completed using before/current images.
 You are not the planner. A caption is guidance, NOT evidence of success. The first
 three images are at phase start; the last three are the current left, right, wrist views.
+Judge ONLY phase.success_criteria. The phase instruction is context, not an extra
+requirement for this verdict. If the current criterion is met, return success even
+when later placement, activation, or other task goals remain unfinished. Conversely,
+do not count progress toward a later phase as proof that this criterion was met.
 Inspect all three labeled current views independently. A visible unmet condition in
 ANY view rules out success, even if another view looks complete. Evaluate every
 requirement in success_criteria using the current observations.
@@ -85,11 +77,6 @@ class HierarchyModel(CaptionModel):
     @torch.no_grad()
     def structured(self, images, payload, operation):
         system = plan_system() if operation == "plan" else VERIFY_SYSTEM
-        if operation == "plan" and payload.get("caption_mode") != "planner":
-            system += (
-                " The controller uses a separate caption source. Set caption_type to none "
-                "and caption to an empty string for every phase."
-            )
         labels = (["phase start left", "phase start right", "phase start wrist"]
                   if operation == "verify" else []) + ["current left", "current right", "current wrist"]
         content = []
@@ -105,10 +92,6 @@ class HierarchyModel(CaptionModel):
             if operation == "plan":
                 if value.get("error") == "unplannable":
                     raise ValueError("Planner could not plan reliably: " + str(value.get("reason", "")))
-                if payload.get("caption_mode") != "planner" and isinstance(value.get("phases"), list):
-                    # Instructor owns captions; Qwen's unused caption fields must not reject a valid plan.
-                    value["phases"] = [{**phase, "caption_type": "none", "caption": ""}
-                                       if isinstance(phase, dict) else phase for phase in value["phases"]]
                 result = {"phases": parse_plan(value, payload.get("skills", []))}
             else:
                 result = parse_verdict(value)

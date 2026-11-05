@@ -16,8 +16,7 @@ from hierarchical_controller import HTTPBackend, HierarchicalController, Hierarc
 
 
 def phase(name):
-    return {"skill": "place", "instruction": name, "success_criteria": f"{name} visibly completed",
-            "caption_type": "current_action", "caption": "caption for " + name}
+    return {"skill": "place", "instruction": name, "success_criteria": f"{name} visibly completed"}
 
 
 def verdict(status="success", confidence=0.99):
@@ -90,6 +89,22 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(ctrl.instruction, "two")
         finally:
             ctrl.close()
+
+    def test_black_observation_recovers_or_stops_without_monitor_verdict(self):
+        dark = {camera: SimpleNamespace(mean=lambda: 1.0, std=lambda: 1.0)
+                for camera in ("video.robot0_agentview_left", "video.robot0_agentview_right",
+                               "video.robot0_eye_in_hand")}
+        ctrl = controller(Backend(verdicts=[verdict("ongoing")]))
+        self.addCleanup(ctrl.close)
+        ctrl.start({"frame": 0}, "task")
+        self.assertFalse(observe(ctrl, {"frame": 1, **dark}, 1))
+        self.assertEqual(ctrl.invalid_observations, 1)
+        self.assertFalse(ctrl.stopped)
+        self.assertFalse(observe(ctrl, {"frame": 2}, 2))
+        self.assertEqual(ctrl.invalid_observations, 0)
+        self.assertFalse(observe(ctrl, {"frame": 3, **dark}, 3))
+        self.assertTrue(observe(ctrl, {"frame": 4, **dark}, 4))
+        self.assertIn("observation_error", ctrl.error)
 
     def test_verifier_error_retries_once_then_stops(self):
         calls = []
@@ -195,7 +210,7 @@ class ControllerTests(unittest.TestCase):
         ctrl.observe({"frame": 0}, 0, at_chunk_boundary=True)
         self.assertEqual(ctrl.caption, "fresh one")
         plan_request = next(p for op, p in backend.requests if op == "plan")
-        self.assertEqual(plan_request["caption_mode"], "instructor")
+        self.assertNotIn("caption_mode", plan_request)
         self.assertNotIn("max_phases", plan_request)
         self.assertEqual([p["instruction"] for p in ctrl.phases], ["one", "two", "three"])
         self.assertFalse(observe(ctrl, {"frame": 1}, 1))
@@ -625,7 +640,7 @@ class ServerPromptTests(unittest.TestCase):
                  and n.name in {"plan_system", "HierarchyModel", "InvalidModelOutput"}]
         namespace = {"CaptionModel": object, "json": json,
                      "torch": SimpleNamespace(no_grad=lambda: lambda fn: fn),
-                     "CAPTION_TYPE_DESCRIPTIONS": "types", "VERIFY_SYSTEM": "verify",
+                     "VERIFY_SYSTEM": "verify",
                      "parse_object": parse_object, "parse_plan": parse_plan,
                      "parse_verdict": parse_verdict}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
@@ -645,16 +660,15 @@ class ServerPromptTests(unittest.TestCase):
         self.assertEqual(result["raw_output"], raw)
         self.assertEqual(len(self.messages), 1)
 
-    def test_instructor_mode_ignores_planner_caption_fields(self):
+    def test_plan_ignores_unrelated_caption_fields(self):
         bad_caption = phase("pick mug")
-        bad_caption.update(caption_type="current_action", caption="")
+        bad_caption.update(caption_type="current_action", caption="long unused caption " * 100)
         model = self.load_model_logic([json.dumps({"phases": [bad_caption]})])
         result = model.structured([], {"caption_mode": "instructor"}, "plan")
-        self.assertEqual(result["phases"][0]["caption_type"], "none")
-        self.assertEqual(result["phases"][0]["caption"], "")
-        model = self.load_model_logic([json.dumps({"phases": [bad_caption]})])
-        with self.assertRaisesRegex(ValueError, "caption cannot be empty"):
-            model.structured([], {"caption_mode": "planner"}, "plan")
+        self.assertEqual(result["phases"][0]["instruction"], "pick mug")
+        self.assertNotIn("caption", result["phases"][0])
+        self.assertNotIn("caption_type", result["phases"][0])
+        self.assertNotIn('"caption":', self.messages[0][0]["content"])
 
     def test_invalid_output_preserved_without_hidden_server_retry(self):
         for raw in ('{"phases": []}', '{"phases": "wrong"}', 'not JSON'):
