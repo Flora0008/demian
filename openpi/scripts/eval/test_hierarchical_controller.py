@@ -4,13 +4,16 @@ import contextlib
 import io
 import logging
 import json
+import os
 from pathlib import Path
+import tempfile
 import threading
 import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import urllib.error
+import numpy as np
 
 from hierarchical_controller import HTTPBackend, HierarchicalController, HierarchyConfig, parse_object, parse_plan, parse_verdict
 
@@ -458,7 +461,7 @@ class EvalIntegrationTests(unittest.TestCase):
         path = Path(__file__).with_name("run_robocasa_eval.py")
         tree = ast.parse(path.read_text())
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_episode")
-        namespace = {"RoboCasaClient": object, "AsyncInstructor": object,
+        namespace = {"RoboCasaClient": object, "AsyncInstructor": object, "Path": Path,
                      "logging": logging,
                      "_subtitle_max_chars": lambda *args: 80,
                      "_wrap_subtitle_lines": lambda lines, *args: lines,
@@ -644,6 +647,50 @@ class EvalIntegrationTests(unittest.TestCase):
 
 
 class ServerPromptTests(unittest.TestCase):
+    def test_monitor_prompt_is_phase_scoped_and_task_neutral(self):
+        path = Path(__file__).with_name("qwen_hierarchy_server.py")
+        tree = ast.parse(path.read_text())
+        assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "VERIFY_SYSTEM"
+                                  for target in node.targets))
+        prompt = ast.literal_eval(assignment.value)
+        self.assertIn("ONLY phase.success_criteria", prompt)
+        for task_specific_word in ("placement", "dispenser", "receptacle", "button"):
+            self.assertNotIn(task_specific_word, prompt)
+        for instruction, criterion in (("Move the mug", "mug is in the gripper"),
+                                       ("Insert the cable", "connector is seated in the port")):
+            backend = Backend(phases=[{"skill": "move", "instruction": instruction,
+                                       "success_criteria": criterion}], verdicts=[verdict("ongoing")])
+            ctrl = controller(backend)
+            self.addCleanup(ctrl.close)
+            ctrl.start({"frame": 0}, "whole task")
+            observe(ctrl, {"frame": 1}, 1)
+            verify_request = next(payload for op, payload in backend.requests if op == "verify")
+            self.assertNotIn("task", verify_request)
+            self.assertEqual(verify_request["phase"]["success_criteria"], criterion)
+
+    def test_blackout_probe_preserves_raw_frames_and_gpu_context(self):
+        path = Path(__file__).with_name("run_robocasa_eval.py")
+        tree = ast.parse(path.read_text())
+        fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "_capture_blackout_snapshot")
+        namespace = {"Path": Path, "np": np, "json": json, "_os": os, "logging": logging}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), namespace)
+        key = "video.robot0_agentview_left"
+        before = {key: np.full((2, 2, 3), 100, dtype=np.uint8)}
+        after = {key: np.zeros((2, 2, 3), dtype=np.uint8)}
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "episode_blackout"
+            gpu = SimpleNamespace(returncode=0, stdout="ECC errors: 0", stderr="")
+            with patch("subprocess.run", return_value=gpu), patch("logging.error"):
+                namespace["_capture_blackout_snapshot"](directory, 12, 8, before, after,
+                                                           [key], SimpleNamespace())
+            with np.load(directory / "camera_frames.npz") as frames:
+                np.testing.assert_array_equal(frames[f"reference_{key}"], before[key])
+                np.testing.assert_array_equal(frames[f"blackout_{key}"], after[key])
+            self.assertEqual(json.loads((directory / "context.json").read_text())["step"], 12)
+            self.assertIn("ECC errors: 0", (directory / "gpu_diagnostics.txt").read_text())
+
     def load_model_logic(self, outputs):
         # Replace only heavyweight generation; execute the actual server validation/retry code.
         path = Path(__file__).with_name("qwen_hierarchy_server.py")
