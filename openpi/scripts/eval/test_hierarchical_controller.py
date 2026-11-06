@@ -292,6 +292,20 @@ class ControllerTests(unittest.TestCase):
     def test_complete_plan_can_exceed_five_phases(self):
         self.assertEqual(len(parse_plan({"phases": [phase(str(i)) for i in range(12)]})), 12)
 
+    def test_planner_caption_fields_are_ignored(self):
+        empty_caption = {**phase("empty"), "caption": ""}
+        oversized_caption = {**phase("oversized"), "caption": "x" * 401}
+        parsed = parse_plan({"phases": [empty_caption, oversized_caption]})
+        self.assertEqual([item["instruction"] for item in parsed], ["empty", "oversized"])
+        self.assertNotIn("caption", parsed[0])
+        self.assertNotIn("caption_type", parsed[0])
+
+    def test_empty_and_oversized_required_fields_have_distinct_errors(self):
+        with self.assertRaisesRegex(ValueError, "Empty instruction"):
+            parse_plan({"phases": [{**phase("one"), "instruction": ""}]})
+        with self.assertRaisesRegex(ValueError, "Oversized instruction"):
+            parse_plan({"phases": [{**phase("one"), "instruction": "x" * 301}]})
+
     def test_same_timestep_cannot_confirm_twice(self):
         ctrl = controller()
         ctrl.start({"frame": 0}, "task")
@@ -645,6 +659,15 @@ class ServerPromptTests(unittest.TestCase):
         self.assertEqual(result["raw_output"], raw)
         self.assertEqual(len(self.messages), 1)
 
+    def test_instructor_mode_ignores_planner_caption_fields(self):
+        raw = json.dumps({"phases": [{**phase("one"), "caption": ""}]})
+        model = self.load_model_logic([raw])
+        result = model.structured([], {"caption_mode": "instructor"}, "plan")
+        self.assertNotIn("caption", result["phases"][0])
+        system = self.messages[0][0]["content"]
+        self.assertNotIn("caption_type", system)
+        self.assertNotIn("caption to an empty string", system)
+
     def test_invalid_output_preserved_without_hidden_server_retry(self):
         for raw in ('{"phases": []}', '{"phases": "wrong"}', 'not JSON'):
             model = self.load_model_logic([raw])
@@ -690,6 +713,21 @@ class ServerPromptTests(unittest.TestCase):
         self.assertIn("visible in ANY view", prompt)
         self.assertIn("missing or empty skills list", prompt)
         self.assertIn('"view_observations"', prompt)
+
+    def test_monitor_prompt_is_task_neutral_and_phase_scoped(self):
+        path = Path(__file__).with_name("qwen_hierarchy_server.py")
+        tree = ast.parse(path.read_text())
+        assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "VERIFY_SYSTEM"
+                                  for target in node.targets))
+        namespace = {}
+        exec(compile(ast.Module(body=[assignment], type_ignores=[]), str(path), "exec"), namespace)
+        prompt = namespace["VERIFY_SYSTEM"]
+        self.assertIn("only the current phase success_criteria", prompt)
+        self.assertIn("later phases or the full task", prompt)
+        self.assertNotIn("placement", prompt.lower())
+        self.assertNotIn("button", prompt.lower())
+        self.assertNotIn("grasping", prompt.lower())
 
 
 if __name__ == "__main__":

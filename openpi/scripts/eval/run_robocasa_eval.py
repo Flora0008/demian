@@ -1220,7 +1220,7 @@ class Args:
     hierarchy_url: Optional[str] = None
     """Opt-in observation-only planner/verifier URL, e.g. http://localhost:8002."""
     hierarchy_caption_mode: str = "planner"
-    """none | planner | instructor. Instructor is called afresh for EVERY phase."""
+    """none | planner (legacy, no caption) | instructor. Instructor is called afresh for EVERY phase."""
     hierarchy_caption_url: Optional[str] = None
     """Existing Qwen Instructor server URL, required for caption_mode=instructor."""
     hierarchy_skills_file: Optional[str] = None

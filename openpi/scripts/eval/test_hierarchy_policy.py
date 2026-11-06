@@ -19,7 +19,7 @@ class PolicyTests(unittest.TestCase):
         observe(ctrl, {"frame": 1}, 1)
         observe(ctrl, {"frame": 2}, 2)
         self.assertEqual(ctrl.replans, 0)
-        self.assertEqual(ctrl.caption, "caption for one")
+        self.assertIsNone(ctrl.caption)
         observe(ctrl, {"frame": 3}, 3)
         self.assertEqual(ctrl.replans, 1)  # Installing repair does NOT reset budget.
         for step in (4, 5, 6):
@@ -106,13 +106,12 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(requests), 2)
         self.assertEqual(requests[0], requests[1])
 
-    def test_malformed_enum_values_are_model_output_errors(self):
+    def test_verdict_enums_are_validated_but_planner_caption_fields_are_ignored(self):
         from hierarchical_controller import parse_plan, parse_verdict
         with self.assertRaises(ValueError):
             parse_verdict({"status": [], "confidence": .9, "evidence": "bad enum"})
         malformed = {**phase("one"), "caption_type": []}
-        with self.assertRaises(ValueError):
-            parse_plan({"phases": [malformed]})
+        self.assertEqual(parse_plan({"phases": [malformed]})[0]["instruction"], "one")
 
     def test_trace_survives_without_episode_summary_and_preserves_images(self):
         with tempfile.TemporaryDirectory() as directory:

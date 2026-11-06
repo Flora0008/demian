@@ -16,14 +16,14 @@
 
 `hierarchy_url` 未配置时保持原评估控制路径；只新增统一计时、episode 身份及逐 episode 结果文件。
 配置 hierarchy 后禁止同时使用旧的 GT subgoal plan 或逐帧 GT caption 来控制阶段；层级控制器独占 caption。
-原始总任务仍传给 Planner/Monitor；π0.5 在计划生效后接收当前子任务及其匹配 caption。
+原始总任务仍传给 Planner/Monitor；π0.5 在计划生效后接收当前子任务。caption 与计划解耦：仅 Instructor 模式可异步提供当前阶段的 caption。
 
 ## 2. 初始规划与重规划
 
 初始 Planner 尚未返回时：原始任务＋无 caption，动作继续；不是失败后的 fallback。
 Planner 得到当前三个视角、原始任务、全部完成/恢复历史、反馈、之前的计划和当前阶段编号。
 提示词要求仅规划剩余工作、保持依赖顺序、不发明物体或能力。
-计划各阶段包含 skill、instruction、success_criteria、caption_type、caption。
+计划各阶段只包含 skill、instruction、success_criteria。服务忽略 Planner 返回的 caption/caption_type，避免无关的空或超长 caption 使计划失效。
 计划保留完整列表，没有最多五阶段限制。解析失败不截断执行。
 无法可靠规划时返回 unplannable 和原因；按模型输出错误处理，允许一次重试。
 
@@ -90,7 +90,7 @@ caption 空文本、非法文本、服务或网络错误均记录，并用最新
 重试在后续可用 chunk 边界发起，同时最多一个当前有效请求；没有次数上限、没有额外时间阈值。
 成功得到有效 caption 后停止重试；新阶段、重规划或 episode 结束时停止旧请求的重试。
 已开始的底层 GPU/HTTP 调用不能保证立即停止，但其返回不得注入新阶段。
-caption_mode=planner 使用 Planner 提供的 caption；none 始终无 caption，供消融使用。
+caption_mode=planner 为兼容旧参数保留，但不再使用 Planner caption；none 始终无 caption，供消融使用；instructor 在每个新阶段异步生成 caption。
 
 ## 6. 请求重试、排队、限制和错误
 
@@ -110,9 +110,9 @@ HTTP 接收改为多线程，模型生成仍由一把锁串行执行，避免未
 - Planner/Monitor max_new_tokens 默认 1024，do_sample=False，use_cache=True，enable_thinking=False。
 - 模型输出不是无限长；被截断的 JSON 作为输出错误重试，不把前半份计划拿来执行。
 - instruction 最长 300 字符；success_criteria/evidence 最长 600；skill 最长 160。
-- Planner caption 最长 400；Instructor caption 最长 1200；空 Instructor caption 作为无效输出重试。
+- Planner 只校验阶段字段：空字段与超长字段分别报告为 `Empty <field>` 与 `Oversized <field>`；Instructor caption 最长 1200，空 caption 作为无效输出重试。
 - 服务请求体最多 8,000,000 字节，plan 要求三个当前图像，verify 要求另加三个起始图像。
-- 可选 skills 列表非空时必须匹配其中的 skill；caption_type 为现有五类之一。
+- 可选 skills 列表非空时必须匹配其中的 skill；Planner caption_type 不参与计划校验。
 - 原 Instructor 服务 max_new_tokens 默认128、bfloat16、默认 cuda:1；具体部署以启动命令为准。
 - hierarchy 服务默认 cuda:0、127.0.0.1:8002；模型权重路径由 --model-path 明确指定，不由代码选择 Qwen 权重版本。
 

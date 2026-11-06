@@ -19,7 +19,6 @@ import uuid
 from hierarchy_trace import EventLog
 
 
-CAPTION_TYPES = {"current_action", "environment-simple", "agent_arm_state", "reasoning-short", "none"}
 CAMERAS = ("video.robot0_agentview_left", "video.robot0_agentview_right", "video.robot0_eye_in_hand")
 
 
@@ -37,9 +36,14 @@ def parse_object(text):
 
 
 def short_text(value, name, maximum=600, allow_empty=False):
-    if not isinstance(value, str) or len(value) > maximum or (not value.strip() and not allow_empty):
-        raise ValueError(f"Invalid {name}: expected text of at most {maximum} characters")
-    return value.strip()
+    if not isinstance(value, str):
+        raise ValueError(f"Invalid {name}: expected text")
+    text = value.strip()
+    if not text and not allow_empty:
+        raise ValueError(f"Empty {name}: expected non-empty text")
+    if len(text) > maximum:
+        raise ValueError(f"Oversized {name}: maximum {maximum} characters")
+    return text
 
 
 def parse_plan(value, skills=()):
@@ -53,19 +57,12 @@ def parse_plan(value, skills=()):
         skill = short_text(phase.get("skill"), "skill", 160)
         if skills and skill not in skills:
             raise ValueError(f"Unsupported skill: {skill}")
-        kind = phase.get("caption_type")
-        if not isinstance(kind, str) or kind not in CAPTION_TYPES:
-            raise ValueError(f"Unsupported caption_type: {kind}")
-        caption = short_text(phase.get("caption"), "caption", 400, allow_empty=kind == "none")
-        if kind == "none" and caption:
-            raise ValueError("caption_type=none requires an empty caption")
+        # Captions belong to the optional Instructor; legacy Planner fields are deliberately ignored.
         result.append({
             "id": index,
             "skill": skill,
             "instruction": short_text(phase.get("instruction"), "instruction", 300),
             "success_criteria": short_text(phase.get("success_criteria"), "success_criteria"),
-            "caption_type": kind,
-            "caption": caption,
         })
     return result
 
@@ -320,10 +317,7 @@ class HierarchicalController:
         self.failure_streak = 0
         self.instruction = self.phase["instruction"]
         self.caption, self.caption_type = None, "none"
-        if self.config.caption_mode == "planner":
-            self.caption = self.phase["caption"] or None
-            self.caption_type = self.phase["caption_type"]
-        elif self.config.caption_mode == "instructor":
+        if self.config.caption_mode == "instructor":
             self._caption_future = self._submit(self._caption_executor, "caption", {"images": self.phase_start_images,
                                         "task_description": self.instruction}, step)
         self.events.append({"event": "phase_enter", "step": step, "generation": self.generation,

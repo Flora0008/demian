@@ -16,15 +16,6 @@ from qwen_instructor_server import CaptionModel, decode_images
 from hierarchical_controller import parse_object, parse_plan, parse_verdict
 
 
-CAPTION_TYPE_DESCRIPTIONS = """The five caption choices use the DeMiAn caption taxonomy:
-- current_action: physical-motion caption describing the immediate robot motion.
-- environment-simple: simple scene caption describing the relevant objects and environment state.
-- agent_arm_state: arm-pose caption describing the robot arm, gripper, and end-effector state.
-- reasoning-short: short reasoning caption connecting the current observation, constraint, and next action.
-- none: no auxiliary caption is reliable; return an empty caption.
-"""
-
-
 def plan_system():
     return f"""You plan short executable subtasks for a robot controlled by a language-conditioned VLA.
 Inspect the labeled left, right, and wrist views independently. Briefly report what
@@ -46,29 +37,21 @@ skills, available objects, or robot capabilities; missing visual evidence alone 
 insufficient.
 Output ONLY a JSON object: {{"view_observations": {{"left": "...", "right": "...", "wrist": "..."}},
 "phases": [{{"skill": "...", "instruction": "...",
-"success_criteria": "observable completed outcome, including release when needed",
-"caption_type": "current_action", "caption": "short grounded action/scene guidance"}}]}}.
+"success_criteria": "observable completed outcome"}}]}}.
 Return a complete non-empty list of phases when feasible. There is no fixed phase-count cap. Instructions are English and at most 300 characters.
-Captions are at most 400 characters; success_criteria at most 600.
-{CAPTION_TYPE_DESCRIPTIONS}
-Use caption_type none and an empty caption when no reliable extra information is available.
+success_criteria is at most 600 characters. Do not output captions, caption types, or any other policy-guidance field.
 Do not assume future actions already happened. Reasoning should identify a concrete
 dependency or constraint; do not write long speculative explanations. Never return Python code."""
 
 VERIFY_SYSTEM = """You judge whether a robot's CURRENT subtask is completed using before/current images.
 You are not the planner. A caption is guidance, NOT evidence of success. The first
 three images are at phase start; the last three are the current left, right, wrist views.
-Inspect all three labeled current views independently. A visible unmet condition in
-ANY view rules out success, even if another view looks complete. Evaluate every
-requirement in success_criteria using the current observations.
-Do not confuse reaching with grasping, proximity with correct placement, or holding
-an object over a receptacle with placing and releasing it. Placement requires the
-complete object footprint to be visibly supported by the target surface after release;
-overlap in one image, edge contact, hovering, or a gripper still holding it is not
-enough. If support or release cannot be verified, choose uncertain. A button being approached
-does not prove a machine was activated. If the necessary condition is occluded or
-not visually observable, choose uncertain. Use failure for visible loss of a required
-condition or an invalid plan requiring recovery, not merely unfinished movement.
+Inspect all three labeled current views independently. Judge only the current phase success_criteria;
+do not require later phases or the full task to be complete. A visible unmet condition in
+ANY view rules out success, even if another view looks complete. A positive verdict requires
+visual evidence for every requirement in success_criteria. If the outcome is ambiguous,
+occluded, or not visually observable, choose uncertain. Use failure only for visible evidence
+that contradicts a current requirement or shows the current phase is invalid, not merely unfinished movement.
 Output ONLY {"status": "ongoing|success|failure|uncertain", "confidence": 0.0,
 "evidence": "brief evidence from each relevant view and any unresolved condition"}.
 confidence is a heuristic score, not a calibrated probability. evidence <= 600 characters."""
@@ -85,11 +68,6 @@ class HierarchyModel(CaptionModel):
     @torch.no_grad()
     def structured(self, images, payload, operation):
         system = plan_system() if operation == "plan" else VERIFY_SYSTEM
-        if operation == "plan" and payload.get("caption_mode") != "planner":
-            system += (
-                " The controller uses a separate caption source. Set caption_type to none "
-                "and caption to an empty string for every phase."
-            )
         labels = (["phase start left", "phase start right", "phase start wrist"]
                   if operation == "verify" else []) + ["current left", "current right", "current wrist"]
         content = []
