@@ -195,7 +195,7 @@ class ControllerTests(unittest.TestCase):
         ctrl.observe({"frame": 0}, 0, at_chunk_boundary=True)
         self.assertEqual(ctrl.caption, "fresh one")
         plan_request = next(p for op, p in backend.requests if op == "plan")
-        self.assertEqual(plan_request["caption_mode"], "instructor")
+        self.assertNotIn("caption_mode", plan_request)
         self.assertNotIn("max_phases", plan_request)
         self.assertEqual([p["instruction"] for p in ctrl.phases], ["one", "two", "three"])
         self.assertFalse(observe(ctrl, {"frame": 1}, 1))
@@ -665,8 +665,7 @@ class ServerPromptTests(unittest.TestCase):
         result = model.structured([], {"caption_mode": "instructor"}, "plan")
         self.assertNotIn("caption", result["phases"][0])
         system = self.messages[0][0]["content"]
-        self.assertNotIn("caption_type", system)
-        self.assertNotIn("caption to an empty string", system)
+        self.assertNotIn("caption", system.lower())
 
     def test_invalid_output_preserved_without_hidden_server_retry(self):
         for raw in ('{"phases": []}', '{"phases": "wrong"}', 'not JSON'):
@@ -728,6 +727,10 @@ class ServerPromptTests(unittest.TestCase):
         self.assertNotIn("placement", prompt.lower())
         self.assertNotIn("button", prompt.lower())
         self.assertNotIn("grasping", prompt.lower())
+
+    def test_legacy_planner_caption_mode_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Invalid caption mode"):
+            HierarchyConfig(caption_mode="planner")
 
 
 if __name__ == "__main__":

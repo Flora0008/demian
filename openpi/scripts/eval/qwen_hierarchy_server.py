@@ -39,7 +39,7 @@ Output ONLY a JSON object: {{"view_observations": {{"left": "...", "right": "...
 "phases": [{{"skill": "...", "instruction": "...",
 "success_criteria": "observable completed outcome"}}]}}.
 Return a complete non-empty list of phases when feasible. There is no fixed phase-count cap. Instructions are English and at most 300 characters.
-success_criteria is at most 600 characters. Do not output captions, caption types, or any other policy-guidance field.
+success_criteria is at most 600 characters.
 Do not assume future actions already happened. Reasoning should identify a concrete
 dependency or constraint; do not write long speculative explanations. Never return Python code."""
 

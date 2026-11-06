@@ -130,7 +130,7 @@ class HierarchyConfig:
     confirmations: int = 2
     confidence_threshold: float = 0.85
     max_replans: int = 2
-    caption_mode: str = "planner"  # none | planner | instructor
+    caption_mode: str = "none"  # none | instructor
     async_verifier: bool = True
     async_planner: bool = True
 
@@ -141,7 +141,7 @@ class HierarchyConfig:
             raise ValueError("Invalid replan budget / phase timeout")
         if not 0 <= self.confidence_threshold <= 1:
             raise ValueError("Invalid confidence threshold")
-        if self.caption_mode not in {"none", "planner", "instructor"}:
+        if self.caption_mode not in {"none", "instructor"}:
             raise ValueError("Invalid caption mode")
 
 
@@ -288,7 +288,6 @@ class HierarchicalController:
         payload = {
             "task": self.task, "images": self._images(obs), "skills": self.skills,
             "history": self.history, "feedback": feedback,
-            "caption_mode": self.config.caption_mode,
             "previous_plan": getattr(self, "phases", []),
             "current_phase": self.index,
         }
